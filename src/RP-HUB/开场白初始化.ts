@@ -7,7 +7,7 @@
  * 由变量单向同步服务调用后经 updateVariablesWith(type:'message') 写入开场白楼层。
  *
  * 本模块不依赖 window / DOM / 酒馆助手接口，可在 Node 直接运行单测：
- *   node src/第三部-管理面板/开场白初始化.test.ts
+ *   node src/RP-HUB/开场白初始化.test.ts
  */
 
 /** 单模板变量池：{ [变量路径] → 值 }（嵌套对象，对齐 RP-Hub variableState） */

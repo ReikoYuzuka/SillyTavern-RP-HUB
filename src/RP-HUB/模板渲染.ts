@@ -25,7 +25,7 @@
  *   确保html标记 / 围栏化 / 筛选可渲染模板 / 拼接显示文本
  *
  * 本模块不依赖 window / DOM / 酒馆助手接口，可在 Node 直接运行单测：
- *   node src/第三部-管理面板/模板渲染.test.ts
+ *   node src/RP-HUB/模板渲染.test.ts
  */
 
 /** 单模板变量池：{ [变量路径] → 值 }（嵌套对象，对齐 RP-Hub variableState） */

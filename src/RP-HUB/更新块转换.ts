@@ -15,7 +15,7 @@
  *   - variables 为数组 → 整池替换（RP-Hub `$root` 数组形，如 social_nodes 列表）。
  *
  * 本模块不依赖 window / DOM / 酒馆助手接口，可在 Node 直接运行单测：
- *   node src/第三部-管理面板/更新块转换.test.ts
+ *   node src/RP-HUB/更新块转换.test.ts
  */
 
 /** 单模板变量池：{ [变量路径] → 值 }（嵌套对象，对齐 RP-Hub variableState） */

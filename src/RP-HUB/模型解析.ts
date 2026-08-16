@@ -14,7 +14,7 @@
  *
  * 本模块不依赖 window / DOM / 酒馆助手接口，且保持自包含（不 import 其它内部模块），
  * 可在 Node 直接运行单测：
- *   node src/第三部-管理面板/模型解析.test.ts
+ *   node src/RP-HUB/模型解析.test.ts
  */
 
 /** 单模板变量池：{ [变量路径] → 值 }（嵌套对象，对齐 RP-Hub variableState；与 更新块转换.ts 同构） */
