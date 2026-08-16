@@ -1,4 +1,13 @@
-# tavern_helper_template
+# SillyTavern-RP-HUB（RP助手）
+
+酒馆助手前端界面：RP-HUB 角色卡管理面板（变量管理 / 模板渲染 / 诊断 / 楼层记录）。
+
+> **协议**：本仓库基于酒馆助手官方模板（tavern_helper_template-main）开发，按
+> **AFPL v9（Aladdin Free Public License）** 整体分发，与酒馆助手（JS-Slash-Runner）
+> 协议一致（非开源协议，禁止商业分发）。详见 [LICENSE](./LICENSE)。
+
+---
+## tavern_helper_template（模板使用说明）
 
 酒馆助手编写前端界面或脚本的模板.
 
