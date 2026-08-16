@@ -1,0 +1,1093 @@
+/* ============================================================
+   RP助手 —— UI 骨架样式（深色系，匹配酒馆暗色主题）
+   全部使用 thp- 前缀避免与酒馆样式冲突
+   ============================================================ */
+
+/* ---------- 入口区块（#extensions_settings2 内直接显示的区块） ---------- */
+.thp-entry-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 14px 16px;
+  background: #1e222c;
+  border: 1px solid #39415a;
+  border-radius: 10px;
+}
+
+.thp-entry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.thp-entry-header b {
+  color: #eef1f8;
+  font-size: 14px;
+}
+
+.thp-entry-tag {
+  font-size: 11px;
+  color: #8b93a5;
+  background: #2c3342;
+  border: 1px solid #343b4c;
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.thp-entry-desc {
+  margin: 0;
+  color: #8b93a5;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.thp-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+/* ---------- 全屏遮罩 ---------- */
+/* 真全屏弹出：Teleport 挂 document.body + position:fixed + 显式视口尺寸 + z-index 最高层
+   （999999，对齐玄狐弹窗，超过 ST 全部容器/浮层，脱离 #extensions_settings2 的尺寸限制）。
+   ⚠️ 不能用 `inset:0`：ST 的 <html> 带 transform（matrix(1,0,0,1,0,0)，沉浸式翻译/主题注入），
+   position:fixed 的包含块会变成 <html>（height:0）而非视口 → overlay 高度坍缩为 0 → modal
+   居中到 0 高容器 → 顶部出视口（手机模式实测「上面全被挡住」）。改用 vw/vh 视口单位显式撑开。 */
+.thp-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 999999;
+  background: rgba(7, 9, 13, 0.62);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.22s ease,
+    visibility 0s linear 0.22s;
+}
+
+.thp-overlay.thp-overlay-open {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.22s ease;
+}
+
+/* ---------- 屏幕居中 modal（全屏铺满 + 自适应） ---------- */
+/* 全屏改造：从「固定 900px 居中卡片」→「接近全屏铺满」。
+   width/height 96vw/96vh 留极小的安全边距（保留遮罩暗色描边 + 圆角卡片形态），
+   随视口缩放；内部由 header(固定) → body(flex:1 填满) → footer(固定) 三段撑起，
+   body 内 nav + content 双栏自适应，content 滚动 —— 见 .thp-modal-body/.thp-content。 */
+.thp-modal {
+  position: relative;
+  width: 96vw;
+  height: 96vh;
+  max-width: none;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  background: #1e222c;
+  border: 1px solid #39415a;
+  border-radius: 10px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  color: #d7dce8;
+  overflow: hidden;
+  transform: translateY(10px) scale(0.98);
+  opacity: 0;
+  transition:
+    transform 0.24s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.22s ease;
+}
+
+.thp-overlay-open .thp-modal {
+  transform: translateY(0) scale(1);
+  opacity: 1;
+}
+
+/* ---------- modal 头部 ---------- */
+.thp-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: clamp(10px, 1.4vh, 16px) clamp(12px, 1.6vw, 20px); /* 连续自适应：随视口平滑缩放 */
+  background: #232936;
+  border-bottom: 1px solid #39415a;
+  flex-shrink: 0;
+}
+
+.thp-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #eef1f8;
+}
+
+.thp-modal-logo {
+  color: #5b8cff;
+  font-size: 18px;
+}
+
+.thp-close-btn {
+  font-size: 14px;
+  line-height: 1;
+  padding: 6px 10px;
+}
+
+/* ---------- modal 主体：侧边导航 + 内容 ---------- */
+.thp-modal-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.thp-nav {
+  width: clamp(120px, 13vw, 170px); /* 连续自适应：侧栏随视口宽度平滑伸缩（约 120~170px） */
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: clamp(10px, 1.2vw, 16px) clamp(8px, 0.8vw, 12px);
+  background: #1a1e28;
+  border-right: 1px solid #343b4c;
+}
+
+.thp-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #a7aebc;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.thp-nav-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #dfe4f0;
+}
+
+.thp-nav-active,
+.thp-nav-active:hover {
+  background: rgba(91, 140, 255, 0.18);
+  color: #bcd0ff;
+  box-shadow: inset 0 0 0 1px rgba(91, 140, 255, 0.35);
+}
+
+.thp-nav-icon {
+  width: 18px;
+  text-align: center;
+  opacity: 0.85;
+}
+
+.thp-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto; /* 全屏自适应：超出可视区的内容区滚动（纵向为主，横向防溢出） */
+  padding: clamp(10px, 1.6vw, 48px); /* 连续自适应：窄屏紧凑、超宽屏留白 */
+}
+
+.thp-tab-page {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(10px, 1.4vh, 16px); /* 连续自适应：低高自动收紧 */
+}
+
+/* ---------- modal 底部 ---------- */
+.thp-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: clamp(8px, 1.2vh, 12px) clamp(12px, 1.6vw, 20px); /* 连续自适应 */
+  background: #232936;
+  border-top: 1px solid #39415a;
+  color: #6f7687;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* ---------- 卡片 ---------- */
+.thp-card {
+  background: #232936;
+  border: 1px solid #39415a;
+  border-radius: 10px;
+  padding: clamp(10px, 1.5vh, 16px) clamp(12px, 1.2vw, 18px); /* 连续自适应：低高/窄屏自动收紧 */
+  display: flex;
+  flex-direction: column;
+  gap: clamp(8px, 1vh, 12px);
+}
+
+.thp-card-muted {
+  opacity: 0.65;
+}
+
+.thp-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.thp-card-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e4e8f2;
+}
+
+.thp-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #2c3342;
+  color: #8b93a5;
+  white-space: nowrap;
+}
+
+.thp-badge-on {
+  background: rgba(72, 199, 142, 0.16);
+  color: #6dd5a8;
+}
+
+/* ---------- 键值状态 ---------- */
+.thp-kv {
+  display: grid;
+  /* 连续自适应：列数随内容宽度自动增减（每列至少 ~210px，可塞几列就几列，不跳变） */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: clamp(6px, 0.8vw, 10px) clamp(10px, 1.4vw, 18px);
+  margin: 0;
+}
+
+.thp-kv-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #1b202b;
+  border: 1px solid #2f3648;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.thp-kv-item dt {
+  font-size: 12px;
+  color: #8b93a5;
+}
+
+.thp-kv-item dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #c9d2e0;
+}
+
+/* ---------- 日志区 ---------- */
+.thp-log-box {
+  height: clamp(150px, 26vh, 46vh); /* 全屏自适应：随视口高度伸缩，小屏保底 150px */
+  overflow-y: auto;
+  background: #161a22;
+  border: 1px solid #2f3648;
+  border-radius: 8px;
+  padding: 6px;
+}
+
+.thp-log-empty {
+  height: 100%;
+  min-height: 90px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #6f7687;
+  text-align: center;
+}
+
+.thp-log-empty p {
+  margin: 0;
+  font-size: 13px;
+  color: #9aa2b3;
+}
+
+.thp-log-empty span {
+  font-size: 12px;
+}
+
+/* 运行日志列表（诊断 Tab）：时间 + 来源 + 内容，级别着色 */
+.thp-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.thp-log-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #1b202b;
+  border: 1px solid #2f3648;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.thp-log-time {
+  flex-shrink: 0;
+  color: #6f7687;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+}
+
+.thp-log-source {
+  flex-shrink: 0;
+  color: #bcd0ff;
+  font-size: 11px;
+  padding: 0 6px;
+  background: rgba(91, 140, 255, 0.12);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.thp-log-text {
+  min-width: 0;
+  flex: 1;
+  color: #c9d2e0;
+}
+
+.thp-log-warn .thp-log-text {
+  color: #d9a24b;
+}
+
+.thp-log-warn {
+  border-color: rgba(217, 162, 75, 0.35);
+  background: rgba(217, 162, 75, 0.07);
+}
+
+.thp-log-error .thp-log-text {
+  color: #f0a09a;
+}
+
+.thp-log-error {
+  border-color: rgba(229, 83, 75, 0.4);
+  background: rgba(229, 83, 75, 0.08);
+}
+
+/* ---------- 表单 ---------- */
+.thp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.thp-field-row {
+  display: flex;
+  /* 连续自适应：半栏宽度随视口平滑伸缩（各 ~200px 起步，占满可用宽度） */
+  gap: clamp(8px, 1vw, 14px);
+}
+
+.thp-field-half {
+  flex: 1 1 clamp(200px, 50%, 9999px);
+  min-width: 0;
+}
+
+.thp-field-label {
+  font-size: 12px;
+  color: #8b93a5;
+}
+
+.thp-input,
+.thp-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: #1b202b;
+  border: 1px solid #39415a;
+  border-radius: 8px;
+  color: #d7dce8;
+  font-size: 13px;
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.thp-input:focus,
+.thp-textarea:focus {
+  border-color: #5b8cff;
+}
+
+.thp-textarea {
+  resize: vertical;
+  line-height: 1.5;
+  font-family: inherit;
+}
+
+select.thp-input {
+  cursor: pointer;
+}
+
+/* ---------- 开关 ---------- */
+.thp-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.thp-switch-row input {
+  display: none;
+}
+
+.thp-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  background: #343b4c;
+  border-radius: 999px;
+  transition: background 0.18s ease;
+}
+
+.thp-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #b7bdcb;
+  border-radius: 50%;
+  transition:
+    transform 0.18s ease,
+    background 0.18s ease;
+}
+
+.thp-switch-row input:checked + .thp-switch {
+  background: rgba(91, 140, 255, 0.55);
+}
+
+.thp-switch-row input:checked + .thp-switch::after {
+  transform: translateX(16px);
+  background: #5b8cff;
+}
+
+.thp-switch-label {
+  font-size: 13px;
+  color: #c9d2e0;
+}
+
+/* ---------- 单选 ---------- */
+.thp-radio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #c9d2e0;
+  cursor: pointer;
+}
+
+.thp-radio-row input {
+  accent-color: #5b8cff;
+}
+
+/* ---------- 按钮 ---------- */
+.thp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: clamp(6px, 1vh, 9px) clamp(10px, 1.1vw, 16px); /* 连续自适应 */
+  border: 1px solid #39415a;
+  border-radius: 8px;
+  background: #2a3140;
+  color: #d7dce8;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.05s ease;
+  white-space: nowrap;
+}
+
+.thp-btn:hover {
+  background: #323a4c;
+  border-color: #4a5470;
+}
+
+.thp-btn:active {
+  transform: translateY(1px);
+}
+
+.thp-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.thp-btn:disabled:hover {
+  background: #2a3140;
+  border-color: #39415a;
+}
+
+.thp-btn:disabled:active {
+  transform: none;
+}
+
+.thp-btn-sm {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.thp-btn-primary {
+  background: rgba(91, 140, 255, 0.18);
+  border-color: rgba(91, 140, 255, 0.55);
+  color: #bcd0ff;
+}
+
+.thp-btn-primary:hover {
+  background: rgba(91, 140, 255, 0.3);
+}
+
+.thp-btn-danger {
+  background: rgba(229, 83, 75, 0.14);
+  border-color: rgba(229, 83, 75, 0.5);
+  color: #f0a09a;
+}
+
+.thp-btn-danger:hover {
+  background: rgba(229, 83, 75, 0.26);
+}
+
+.thp-btn-ghost {
+  background: transparent;
+}
+
+.thp-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.thp-btn-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(6px, 1vw, 12px); /* 连续自适应 */
+}
+
+.thp-btn-group-stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* ---------- 提示文字 ---------- */
+.thp-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #6f7687;
+  line-height: 1.5;
+}
+
+.thp-hint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.thp-hint-warn {
+  color: #d9a24b;
+  background: rgba(217, 162, 75, 0.1);
+  border: 1px solid rgba(217, 162, 75, 0.25);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.thp-note {
+  margin: 0;
+  font-size: 13px;
+  color: #aab2c2;
+  line-height: 1.6;
+}
+
+/* ---------- 变量列表（只读） ---------- */
+.thp-var-empty {
+  min-height: 64px;
+  border: 1px dashed #343b4c;
+  border-radius: 8px;
+}
+
+.thp-var-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: clamp(200px, 36vh, 60vh); /* 全屏自适应 */
+  overflow-y: auto;
+  border: 1px solid #2f3648;
+  border-radius: 8px;
+  background: #161a22;
+  padding: 8px;
+}
+
+.thp-var-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  background: #1b202b;
+  border: 1px solid #2f3648;
+  border-radius: 6px;
+  line-height: 1.5;
+}
+
+.thp-var-path {
+  flex-shrink: 0;
+  color: #bcd0ff;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.thp-var-value {
+  min-width: 0;
+  flex: 1;
+  color: #c9d2e0;
+  font-size: 12px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+/* ---------- 楼层变量（rp_hub · 只读展示，变量管理 Tab） ---------- */
+.thp-sync-pool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: clamp(240px, 46vh, 72vh); /* 全屏自适应 */
+  overflow-y: auto;
+}
+
+.thp-sync-pool {
+  border: 1px solid #2f3648;
+  border-radius: 8px;
+  background: #161a22;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.thp-sync-pool-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #1b202b;
+  border-bottom: 1px solid #2f3648;
+}
+
+.thp-sync-pool-id {
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e4e8f2;
+  word-break: break-all;
+}
+
+.thp-sync-pool-head .thp-btn {
+  flex-shrink: 0;
+}
+
+.thp-sync-var-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  max-height: clamp(160px, 30vh, 52vh); /* 全屏自适应 */
+  overflow-y: auto;
+}
+
+.thp-sync-var {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: #1b202b;
+  border: 1px solid #2f3648;
+  border-radius: 6px;
+}
+
+.thp-sync-var-path {
+  min-width: 0;
+  flex: 1;
+  color: #bcd0ff;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.thp-sync-var-value {
+  color: #6f7687;
+  font-size: 11px;
+  word-break: break-all;
+  white-space: pre-wrap;
+  text-align: right;
+}
+
+.thp-sync-var-input {
+  flex-shrink: 0;
+  width: 46%;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.thp-checkbox-input {
+  flex-shrink: 0;
+  accent-color: #5b8cff;
+  cursor: pointer;
+}
+
+/* ---------- 占位符预览 / 快捷占位符（变量管理 Tab） ---------- */
+.thp-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.thp-preview-box {
+  margin: 0;
+  min-height: 72px;
+  max-height: clamp(120px, 22vh, 40vh); /* 全屏自适应 */
+  overflow-y: auto;
+  background: #161a22;
+  border: 1px dashed #39415a;
+  border-radius: 8px;
+  padding: 10px;
+  color: #bcd0ff;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+}
+
+.thp-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.thp-tag-btn {
+  padding: 3px 8px;
+  border: 1px solid #39415a;
+  border-radius: 6px;
+  background: #2a3140;
+  color: #bcd0ff;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.thp-tag-btn:hover {
+  background: rgba(91, 140, 255, 0.18);
+  border-color: rgba(91, 140, 255, 0.55);
+}
+
+.thp-tag-btn code {
+  font-family: inherit;
+}
+
+/* ---------- 卡面变量更新提示词（只读预览） ---------- */
+.thp-rules-empty {
+  min-height: 56px;
+  border: 1px dashed #343b4c;
+  border-radius: 8px;
+}
+
+.thp-rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: clamp(160px, 30vh, 52vh); /* 全屏自适应 */
+  overflow-y: auto;
+}
+
+.thp-rules-item {
+  border: 1px solid #2f3648;
+  border-radius: 8px;
+  background: #161a22;
+  overflow: hidden;
+  /* 父级 .thp-rules-list 是 flex column；禁止压缩，否则条目被压扁成单行、内容被裁 */
+  flex-shrink: 0;
+}
+
+.thp-rules-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #1b202b;
+  border-bottom: 1px solid #2f3648;
+}
+
+.thp-rules-idx {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #8b93a5;
+}
+
+.thp-rules-name {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #c9d2e0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+.thp-rules-id {
+  min-width: 0;
+  flex: 1;
+  font-size: 11px;
+  color: #6f7687;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thp-rules-head .thp-btn {
+  flex-shrink: 0;
+}
+
+.thp-rules-body {
+  margin: 0;
+  padding: 8px 10px;
+  color: #bcd0ff;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  /* 折叠态由 JS 截断为 80 字摘要，展开态显示全文；
+     移除内层高度上限与滚动，避免摘要被裁剪/遮挡，
+     超长时由外层 .thp-rules-list 统一滚动 */
+  max-height: none;
+  overflow: visible;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+}
+
+.thp-hint code {
+  color: #bcd0ff;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  background: #1b202b;
+  border: 1px solid #2f3648;
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+/* ---------- 变量楼层 Tab ---------- */
+.thp-inline-code {
+  color: #bcd0ff;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  background: #1b202b;
+  border: 1px solid #2f3648;
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+.thp-badge-change {
+  background: rgba(91, 140, 255, 0.16);
+  color: #bcd0ff;
+}
+
+.thp-badge-none {
+  background: #2c3342;
+  color: #8b93a5;
+}
+
+.thp-floor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: clamp(260px, 50vh, 76vh); /* 全屏自适应 */
+  overflow-y: auto;
+}
+
+.thp-floor-item {
+  border: 1px solid #2f3648;
+  border-radius: 8px;
+  background: #161a22;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.thp-floor-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #1b202b;
+  border-bottom: 1px solid #2f3648;
+}
+
+.thp-floor-id {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e4e8f2;
+}
+
+.thp-floor-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #6f7687;
+}
+
+.thp-floor-head .thp-badge {
+  flex-shrink: 0;
+}
+
+.thp-floor-head .thp-btn {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.thp-floor-detail {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thp-floor-section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8b93a5;
+}
+
+.thp-diff-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #2f3648;
+  border-radius: 8px;
+  overflow: auto; /* 窄屏横向滚动兜底（三列对齐不挤爆）；任意宽度都可用 */
+}
+
+.thp-diff-row {
+  display: grid;
+  /* 连续自适应：键列随视口宽度平滑伸缩（100~170px），值列占满剩余 */
+  grid-template-columns: clamp(100px, 12vw, 170px) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid #232a38;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.thp-diff-row:last-child {
+  border-bottom: none;
+}
+
+.thp-diff-head {
+  background: #1b202b;
+  color: #8b93a5;
+  font-size: 11px;
+}
+
+.thp-diff-key {
+  min-width: 0;
+  color: #bcd0ff;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.thp-diff-old {
+  min-width: 0;
+  color: #f0a09a;
+  font-size: 11px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.thp-diff-new {
+  min-width: 0;
+  color: #6dd5a8;
+  font-size: 11px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.thp-snapshot {
+  margin: 0;
+  max-height: clamp(140px, 26vh, 46vh); /* 全屏自适应 */
+  overflow-y: auto;
+  background: #1b202b;
+  border: 1px solid #2f3648;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #aab2c2;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+}
+
+/* ============================================================
+   响应式：连续自适应（fluid）—— 任意分辨率平滑过渡，不做断点跳跃。
+   手段：clamp()（间距/侧栏宽度随 vw/vh 连续变化）、
+         grid auto-fit + minmax(min(100%, px), 1fr)（列数随宽度连续增减）、
+         min(px, vw)（内容上限）、overflow-x:auto（diff 表横滚兜底）。
+   唯一保留的断点 @media (max-width:800px)：侧栏 → 顶部横排。
+   原因：flex-direction: column→row 是布局方向切换，CSS 无法连续过渡（非可动画属性），
+   且侧栏宽度低于约 120px 后条目文字会被裁 —— 必须显式切换，无法用 clamp 连续化。
+   其余全部连续。
+   ============================================================ */
+
+@media (max-width: 800px) {
+  /* 极窄屏 / 平板竖屏：侧边导航改顶部横排（内容全宽），唯一无法连续化的切换 */
+  .thp-modal-body {
+    flex-direction: column;
+  }
+
+  .thp-nav {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: 8px clamp(8px, 2vw, 12px);
+    border-right: none;
+    border-bottom: 1px solid #343b4c;
+    flex-shrink: 0;
+  }
+
+  .thp-nav-item {
+    flex: 0 0 auto;
+    padding: 8px 12px;
+  }
+}
