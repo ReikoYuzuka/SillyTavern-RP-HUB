@@ -54,7 +54,11 @@
           <dd>{{ formatDetail }}</dd>
         </div>
         <div class="thp-kv-item">
-          <dt>变量数</dt>
+          <dt>渲染模式</dt>
+          <dd>{{ 渲染模式 }}</dd>
+        </div>
+        <div class="thp-kv-item">
+          <dt>会话总变量数</dt>
           <dd>{{ 变量数 }}</dd>
         </div>
         <div class="thp-kv-item">
@@ -115,7 +119,7 @@
 
 <script setup lang="ts">
 import { 用聊天切换自动刷新 } from './自动刷新';
-import { 强制重渲染全部, 渲染开关响应式, 设置渲染开关, 渲染状态 as 模板渲染服务状态 } from './模板渲染服务';
+import { 渲染开关响应式, 设置渲染开关, 渲染状态 as 模板渲染服务状态 } from './模板渲染服务';
 import { 扁平化变量表 } from './楼层变量';
 import { 运行日志列表, 清空运行日志 } from './运行日志';
 import {
@@ -140,6 +144,9 @@ const formatDetail = ref('—');
 const 变量数 = ref('—');
 const 卡面模板 = ref('—');
 const 提示 = ref('');
+
+/** 渲染模式（原生 / RP）：formatDetail 的直白映射 —— rphub=RP，其余=原生（含 st / unknown / 后端未找到） */
+const 渲染模式 = computed(() => (formatDetail.value === 'rphub' ? 'RP' : '原生'));
 
 const loading = ref(false);
 const 重渲染中 = ref(false);
@@ -300,14 +307,8 @@ function 获取兼容桥(): 兼容桥 | null {
 
 /**
  * 强制重新渲染（解决换浏览器/刷新后正常、但缓存导致界面未围栏化/未渲染）：
- *  ① 第二部：清 formatDetail 内存缓存（30 分钟 TTL）→ 遍历当前聊天逐条重算
- *     （forceRerenderAll：脏 rph_display 重算为干净，走围栏化判定）+ 覆盖 DOM。
- *  ② 第三部：forceRerenderAll 对模板消息（rph_template_render）让位 display_text/DOM
- *     （display.js:94 守卫 + pure.js:174）且不发射任何事件 → display_text 仍旧内容。
- *     追加 强制重渲染全部()：清合并缓存 → 逐条 渲染单条（写干净 display_text + 标记）→
- *     触发 CHARACTER_MESSAGE_RENDERED 让酒馆助手补建 iframe。
- *  后台执行（逐条 await 让出主线程，不卡 UI）。第二部未加载 → toastr 提示。
- *  汇报区分：第二部重算 count + 第三部重渲染 count。
+ * 调用第二部桥的 forceRerenderAll —— 清 formatDetail 缓存 + 逐条重算 rph_display
+ * + 覆盖 DOM（与「开关一下正则」触发的重渲染同一入口，对全部消息生效）。
  */
 async function 强制重新渲染() {
   if (重渲染中.value) return;
@@ -317,39 +318,12 @@ async function 强制重新渲染() {
     return;
   }
   重渲染中.value = true;
-  let 第二部count = 0;
-  let 第二部跳过 = 0;
   try {
-    // ① 第二部：数据层重算（含脏 rph_display → 干净）
-    try {
-      const 第二部结果 = await 桥.forceRerenderAll();
-      第二部count = 第二部结果?.count ?? 0;
-      第二部跳过 = 第二部结果?.skipped ?? 0;
-    } catch (error) {
-      console.error('[第三部] 第二部强制重算失败：', error);
-      toastr.error(`第二部强制重算失败：${error instanceof Error ? error.message : String(error)}`);
-      return;
-    }
-    // ② 第三部：模板消息显示链补齐（forceRerenderAll 不触发第三部渲染 → display_text 仍旧）
-    let 第三部count = 0;
-    let 第三部跳过 = 0;
-    try {
-      const 第三部结果 = await 强制重渲染全部();
-      第三部count = 第三部结果?.count ?? 0;
-      第三部跳过 = 第三部结果?.skipped ?? 0;
-    } catch (error) {
-      console.error('[第三部] 强制重渲染全部失败：', error);
-      toastr.error(`强制重渲染全部失败：${error instanceof Error ? error.message : String(error)}`);
-      return;
-    }
-    const 总计 = 第二部count + 第三部count;
-    if (总计 > 0) {
-      toastr.success(
-        `已强制重新渲染 ${总计} 条消息（第二部重算 ${第二部count} 条${第二部跳过 > 0 ? `，跳过 ${第二部跳过}` : ''}；第三部重渲染 ${第三部count} 条${第三部跳过 > 0 ? `，跳过 ${第三部跳过}` : ''}）`,
-      );
-    } else {
-      toastr.success('已强制重新渲染完成（当前无可处理的消息）');
-    }
+    await 桥.forceRerenderAll();
+    toastr.success('已强制重新渲染');
+  } catch (error) {
+    console.error('[第三部] 强制重新渲染失败：', error);
+    toastr.error(`强制重新渲染失败：${error instanceof Error ? error.message : String(error)}`);
   } finally {
     重渲染中.value = false;
   }
@@ -377,7 +351,7 @@ async function 刷新状态() {
   // 后端 by-name：是否 RP 卡 / 手动标记 / formatDetail
   const by_name = await 请求<ByName>(`${BASE}/cards/by-name/${encodeURIComponent(name)}`);
   if (by_name) {
-    是否RP卡.value = by_name.formatDetail === 'rphub' ? '是' : '否';
+    是否RP卡.value = by_name.formatDetail === 'rphub' ? '是（后端判断）' : '否（后端判定）';
     formatDetail.value = by_name.formatDetail ?? '—';
     提示.value = by_name.formatDetail === 'rphub' ? '格式识别：RP-Hub' : '格式识别：ST / 未知';
 
@@ -396,11 +370,14 @@ async function 刷新状态() {
       const 键数 = templates.reduce((n, t) => n + 计数模板变量(t), 0);
       变量数.value = String(键数);
       提示.value += ` · ${模板数} 个模板 · ${键数} 个变量键（variableState/initialVariableState 扁平化，数组形按条数）`;
+    } else {
+      卡面模板.value = '无';
     }
   } else {
-    是否RP卡.value = '—';
-    formatDetail.value = '—';
-    提示.value = '后端（rp-hub-compat）未找到该卡记录，RP 卡判定与模板信息不可用。';
+    是否RP卡.value = '否（后端无记录）';
+    formatDetail.value = '无记录';
+    卡面模板.value = '无';
+    提示.value = '后端（rp-hub-compat）未找到该卡记录，按原生卡处理。';
 
     // 兜底：酒馆助手当前聊天变量数
     try {
