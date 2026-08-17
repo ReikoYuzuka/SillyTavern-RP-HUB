@@ -445,6 +445,69 @@ select.thp-input {
   cursor: pointer;
 }
 
+/* ---------- 下拉选择（事件执行顺序等） ---------- */
+.thp-select {
+  background: #1b202b;
+  border: 1px solid #39415a;
+  border-radius: 8px;
+  color: #d7dce8;
+  font-size: 13px;
+  padding: 6px 10px;
+  outline: none;
+  cursor: pointer;
+}
+
+.thp-select:focus {
+  border-color: #5b8cff;
+}
+
+/* ---------- 监听者顺序表（事件执行顺序） ---------- */
+.thp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: clamp(160px, 30vh, 52vh); /* 全屏自适应 */
+  overflow-y: auto;
+  border: 1px solid #2f3648;
+  border-radius: 8px;
+  background: #161a22;
+  padding: 6px;
+}
+
+.thp-list-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: #1b202b;
+  border: 1px solid #2f3648;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.thp-list-index {
+  flex-shrink: 0;
+  color: #8b93a5;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+}
+
+.thp-list-name {
+  flex-shrink: 0;
+  color: #bcd0ff;
+  white-space: nowrap;
+}
+
+.thp-list-preview {
+  min-width: 0;
+  flex: 1;
+  color: #6f7687;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- 开关 ---------- */
 .thp-switch-row {
   display: flex;

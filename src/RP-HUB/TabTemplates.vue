@@ -13,6 +13,40 @@
       <p class="thp-hint">关闭后不进行任何模板渲染操作</p>
     </section>
 
+    <!-- 事件执行顺序（ST-Prompt-Template 渲染冲突兼容） -->
+    <section class="thp-card">
+      <header class="thp-card-header">
+        <h3 class="thp-card-title">事件执行顺序</h3>
+      </header>
+      <p class="thp-hint">
+        兼容性：ST-Prompt-Template 在消息渲染事件里先整体重写楼层（EJS），导致酒馆助手找不到
+        可 iframe 化的前端代码块（界面显示为代码块）。把本插件监听者移到「提示词模板之后、
+        酒馆助手之前」通常可解决。点「获取顺序」查看当前监听者表（手动获取）；选锚点后点
+        「应用」立即生效并持久化（刷新后自动恢复）。
+      </p>
+      <div class="thp-btn-group">
+        <button class="thp-btn" type="button" @click="获取顺序">获取顺序</button>
+        <button class="thp-btn thp-btn-primary" type="button" @click="应用顺序">应用</button>
+        <select v-model="事件锚点" class="thp-select">
+          <option v-for="opt in 事件锚点选项" :key="opt.id" :value="opt.id">{{ opt.name }}</option>
+        </select>
+      </div>
+      <div v-if="监听者表.available" class="thp-list" style="margin-top:8px;">
+        <div
+          v-for="item in 监听者表.list"
+          :key="item.index"
+          class="thp-list-row"
+          :style="{ opacity: item.id === 'ours' ? 1 : 0.8, fontWeight: item.id === 'ours' ? 'bold' : 'normal' }"
+        >
+          <code class="thp-list-index">[{{ item.index }}]</code>
+          <span class="thp-list-name">{{ item.name }}</span>
+          <code class="thp-list-preview" :title="item.preview">{{ item.preview }}</code>
+        </div>
+        <p class="thp-hint">本插件当前在第 {{ 监听者表.oursIndex }} 位{{ 监听者表.oursIndex === -1 ? '（未找到）' : '' }}。</p>
+      </div>
+      <p v-else-if="已获取过" class="thp-hint thp-hint-warn">监听者数组不可用（主窗口事件源访问失败 / 事件未就绪）。</p>
+    </section>
+
     <!-- 脚本脏 span 清理开关 -->
     <section class="thp-card">
       <header class="thp-card-header">
@@ -113,6 +147,7 @@
 <script setup lang="ts">
 import { 渲染开关响应式, 设置渲染开关, 脚本清理响应式, 设置脚本清理开关, 拉取模板定义, 渲染错误, 已渲染正文模式响应式, 设置已渲染正文模式, 重置已渲染正文模式, 默认已渲染正文模式 } from './模板渲染服务';
 import { 滚动锁定响应式, 设置滚动锁定开关 } from './滚动锁定';
+import { 获取监听者表, 应用事件顺序, 读取事件顺序锚点, 保存事件顺序锚点, 事件锚点选项, type 监听者表 } from './事件顺序';
 
 // A3：渲染总开关（与「诊断」页同一响应式 ref，两处实时联动；set 同步
 // localStorage + ref + 清理/收敛存量渲染）。
@@ -134,6 +169,40 @@ const 滚动锁定开关 = computed({
   get: () => 滚动锁定响应式.value,
   set: (v: boolean) => 设置滚动锁定开关(v),
 });
+
+/* ---------- 事件执行顺序（ST-Prompt-Template 渲染冲突兼容） ---------- */
+
+// 锚点设置（localStorage 持久化；刷新后由服务层自动应用）
+const 事件锚点 = ref(读取事件顺序锚点());
+const 监听者表 = ref<监听者表>({ list: [], oursIndex: -1, available: false });
+const 已获取过 = ref(false);
+
+function 获取顺序() {
+  监听者表.value = 获取监听者表();
+  已获取过.value = true;
+  if (监听者表.value.available) {
+    toastr.info(`已获取 ${监听者表.value.list.length} 个监听者（character_message_rendered）。`);
+  } else {
+    toastr.warning('监听者数组不可用（主窗口事件源访问失败 / 事件未就绪）。');
+  }
+}
+
+function 应用顺序() {
+  const 锚点 = 事件锚点.value;
+  保存事件顺序锚点(锚点);
+  if (!锚点) {
+    toastr.info('事件执行顺序已设为「不重排」（维持现状）。');
+    return;
+  }
+  const 结果 = 应用事件顺序(锚点);
+  if (结果.applied) {
+    toastr.success(`已应用：本插件监听者移到「${锚点}」之后（第 ${结果.oursIndex} 位）。`);
+    // 应用后刷新展示表（位置已变）
+    监听者表.value = 获取监听者表();
+  } else {
+    toastr.warning(`未应用：${结果.reason}`);
+  }
+}
 
 /* ---------- 开场白正文「已渲染」检测（路线 B 二次包裹修复，默认值可自定义） ---------- */
 
