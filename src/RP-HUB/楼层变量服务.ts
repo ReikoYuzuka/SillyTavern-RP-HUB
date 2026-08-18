@@ -9,15 +9,16 @@
  * 采集链路：
  *   eventOn(MESSAGE_RECEIVED / MESSAGE_UPDATED / MESSAGE_EDITED / GENERATION_ENDED)
  *     → 延迟 800ms（等酒馆助手楼层变量落定）→ 读该楼层消息变量 rp_hub → rp_hub构建快照
- *     → 与上一楼记录生成 diff → 幂等写入 localStorage（按聊天组织）
+ *     → 与上一楼记录生成 diff → 幂等写入 IndexedDB（按聊天组织，异步防抖落盘）
  *
  * 删除清理：
  *   eventOn(MESSAGE_DELETED) → 移除该楼层的记录（楼层变量随消息一起消失，
- *   由酒馆助手天然处理，无需写回还原）→ localStorage 历史随之清理。
+ *   由酒馆助手天然处理，无需写回还原）→ IndexedDB 历史随之清理。
  *
- * 存储结构（localStorage 键 thp_floor_variables_v1）：
+ * 存储结构（IndexedDB 库 thp_floor_variables_db / 仓库 chats；旧 localStorage 自动迁移）：
  *   { version: 1, chats: { [chatId]: { cardName, cardId, records: [{ messageId, timestamp, snapshot, diff }] } } }
- *   localStorage 仅作变更历史；快照值一律以酒馆助手楼层变量为准。
+ *   IndexedDB 仅作变更历史；快照值一律以酒馆助手楼层变量为准。
+ *   异步持久化见 IndexedDB存储.ts（内存立即更新 + 1.5s 防抖落盘，主线程零同步 I/O）。
  */
 import { ref } from 'vue';
 import {
@@ -33,6 +34,7 @@ import {
 } from './楼层变量';
 import { rp_hub命名空间 } from './楼层变量';
 import { 记录日志 } from './运行日志';
+import { 读存储, 调度落盘, 立即落盘 } from './IndexedDB存储';
 
 /** rp-hub-compat 后端插件地址（相对路径，ST 自动补当前 origin，换端口/域名/局域网都通） */
 const BASE = (() => {
@@ -40,9 +42,6 @@ const BASE = (() => {
   try { const o = (window.parent ?? window)?.location?.origin; if (o) return o + '/api/plugins/rp-hub-compat/v1'; } catch {}
   return '/api/plugins/rp-hub-compat/v1';
 })();
-
-/** localStorage 键 */
-const 存储键 = 'thp_floor_variables_v1';
 
 /** 事件采集延迟（毫秒）：等后端/楼层变量落定后再拉快照 */
 const 采集延迟毫秒 = 800;
@@ -53,26 +52,19 @@ const 当前聊天记录 = ref<楼层记录[]>([]);
 const 当前卡片名 = ref<string | null>(null);
 const 当前卡片ID = ref<string | null>(null);
 
-/* ---------- localStorage 读写 ---------- */
+/* ---------- 存储读写（IndexedDB 异步 + 防抖落盘，见 IndexedDB存储.ts） ---------- */
 
-function 加载存储(): 存储结构 {
+async function 加载存储(): Promise<存储结构> {
   try {
-    const 原文 = localStorage.getItem(存储键);
-    if (!原文) return 空存储();
-    const 解析 = JSON.parse(原文) as 存储结构;
-    if (!解析 || typeof 解析 !== 'object' || !解析.chats || typeof 解析.chats !== 'object') return 空存储();
-    return 解析;
+    return await 读存储();
   } catch {
     return 空存储();
   }
 }
 
 function 保存存储(存储: 存储结构): void {
-  try {
-    localStorage.setItem(存储键, JSON.stringify(存储));
-  } catch {
-    // localStorage 不可用/写满时静默降级，不阻塞主流程
-  }
+  // 内存已由 读存储 缓存；此处仅调度防抖落盘（异步，不阻塞主线程）
+  调度落盘();
 }
 
 /* ---------- SillyTavern / 宿主上下文 ---------- */
@@ -166,7 +158,7 @@ function 读取楼层rp_hub快照(messageId: number | string): 扁平变量表 {
 async function 记录楼层(messageId: number | string): Promise<void> {
   const 聊天 = 获取聊天ID();
   if (!聊天) return;
-  const 存储 = 加载存储();
+  const 存储 = await 加载存储();
   const 聊天集: 聊天记录 = 存储.chats[聊天] ?? { cardName: null, cardId: null, records: [] };
   // C2：卡片信息按聊天缓存 —— 仅该聊天首次记录时才请求后端 by-name，
   // 之后复用聊天集已存的 cardName/cardId（避免每楼一次后端请求；切聊天自然失效）
@@ -179,7 +171,7 @@ async function 记录楼层(messageId: number | string): Promise<void> {
   const 上一楼 = 取前一楼记录(聊天集.records, messageId);
   const 有内容 = Object.keys(快照).length > 0 || Object.keys(上一楼?.snapshot ?? {}).length > 0;
   if (!有内容) {
-    刷新当前聊天();
+    await 刷新当前聊天();
     return;
   }
   聊天集.cardName = 卡片?.cardName ?? 聊天集.cardName;
@@ -195,7 +187,7 @@ async function 记录楼层(messageId: number | string): Promise<void> {
   存储.chats[聊天] = 聊天集;
   保存存储(存储);
   记录日志('楼层记录', `#${messageId} 楼层变量已记录（${Object.keys(diff).length} 个变更）`);
-  刷新当前聊天();
+  await 刷新当前聊天();
 }
 
 /** 消息事件合并防抖：同一 messageId 的多次事件只做一次采集 */
@@ -218,23 +210,23 @@ function 调度采集(messageId: number | string): void {
 async function 删除楼层记录(messageId: number | string): Promise<void> {
   const 聊天 = 获取聊天ID();
   if (!聊天) return;
-  const 存储 = 加载存储();
+  const 存储 = await 加载存储();
   const 聊天集 = 存储.chats[聊天];
   if (!聊天集) return;
   const 新记录 = 聊天集.records.filter(r => String(r.messageId) !== String(messageId));
   if (新记录.length === 聊天集.records.length) {
-    刷新当前聊天();
+    await 刷新当前聊天();
     return;
   }
   聊天集.records = 新记录;
   保存存储(存储);
   记录日志('楼层记录', `#${messageId} 楼层变量记录已删除（消息删除）`);
-  刷新当前聊天();
+  await 刷新当前聊天();
 }
 
 /* ---------- 聊天切换 / 刷新 ---------- */
 
-function 刷新当前聊天(): void {
+async function 刷新当前聊天(): Promise<void> {
   const 聊天 = 获取聊天ID();
   当前聊天ID.value = 聊天;
   if (!聊天) {
@@ -243,7 +235,7 @@ function 刷新当前聊天(): void {
     当前卡片ID.value = null;
     return;
   }
-  const 存储 = 加载存储();
+  const 存储 = await 加载存储();
   const 聊天集 = 存储.chats[聊天];
   当前聊天记录.value = 聊天集?.records ?? [];
   当前卡片名.value = 聊天集?.cardName ?? null;
@@ -254,7 +246,7 @@ function 刷新当前聊天(): void {
 
 /** 启动事件监听（index.ts 挂载时调用；eventOn 在 iframe 关闭时自动卸载） */
 export function 启动楼层记录服务(): void {
-  刷新当前聊天();
+  void 刷新当前聊天(); // 异步加载（IndexedDB 读取）
   const 注册 = (事件: unknown, 处理器: (message_id: number) => void) => {
     try {
       (eventOn as (事件: unknown, 处理器: (message_id: number) => void) => { stop: () => void })(事件, 处理器);
@@ -273,7 +265,7 @@ export function 启动楼层记录服务(): void {
   if (tavern_events?.CHAT_CHANGED) {
     try {
       (eventOn as (事件: unknown, 处理器: () => void) => { stop: () => void })(tavern_events.CHAT_CHANGED, () =>
-        刷新当前聊天(),
+        void 刷新当前聊天(),
       );
     } catch {
       // 忽略
@@ -281,20 +273,21 @@ export function 启动楼层记录服务(): void {
   }
 }
 
-/** 界面「刷新」：重新从 localStorage 加载当前聊天记录 */
-export function 刷新楼层记录(): void {
-  刷新当前聊天();
+/** 界面「刷新」：重新从 IndexedDB 加载当前聊天记录 */
+export async function 刷新楼层记录(): Promise<void> {
+  await 刷新当前聊天();
 }
 
 /** 界面「清空本聊天记录」 */
-export function 清空当前聊天记录(): void {
+export async function 清空当前聊天记录(): Promise<void> {
   const 聊天 = 当前聊天ID.value;
   if (!聊天) return;
-  const 存储 = 加载存储();
+  const 存储 = await 加载存储();
   delete 存储.chats[聊天];
   保存存储(存储);
+  await 立即落盘(); // 清空立即持久化（不等防抖）
   记录日志('楼层记录', `已清空当前聊天（${聊天}）的楼层变量记录`);
-  刷新当前聊天();
+  await 刷新当前聊天();
 }
 
 export { 当前聊天ID, 当前聊天记录, 当前卡片名, 当前卡片ID };
