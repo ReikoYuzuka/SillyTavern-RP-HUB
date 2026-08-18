@@ -35,6 +35,7 @@ import { 读取楼层变量 } from './变量单向同步';
 import { 深合并池, 回退卡面初始状态, 渲染全部模板, 判断显示键状态, 是模板消息, 脚本内含脏span, 清理脚本脏span, type 模板定义, type 模板池表 } from './模板渲染';
 import { 记录日志 } from './运行日志';
 import { 读取事件顺序锚点, 应用事件顺序 } from './事件顺序';
+import { 启动编辑兜底 } from './编辑兜底';
 
 /** rp-hub-compat 后端插件地址（相对路径，ST 自动补当前 origin，换端口/域名/局域网都通） */
 const BASE = (() => {
@@ -1212,6 +1213,9 @@ function 注册最先(事件: unknown, 处理器: (message_id: number) => void):
  * eventOn 在脚本 iframe 关闭时由环境自动卸载。
  */
 export function 启动模板渲染服务(): void {
+  // 编辑兜底：MESSAGE_UPDATED 延时恢复引擎结果（ST 编辑取消用 mes 重建 DOM 会覆盖
+  // 已隐藏标签的引擎显示 → 延时后强制写回，成为最后写 DOM 的一方）。
+  启动编辑兜底();
   if (tavern_events?.CHARACTER_MESSAGE_RENDERED) {
     注册最先(tavern_events.CHARACTER_MESSAGE_RENDERED, message_id => 处理事件(message_id));
   }

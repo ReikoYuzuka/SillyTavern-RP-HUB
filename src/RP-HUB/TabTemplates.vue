@@ -13,6 +13,23 @@
       <p class="thp-hint">关闭后不进行任何模板渲染操作</p>
     </section>
 
+    <!-- 编辑兜底恢复 -->
+    <section class="thp-card">
+      <header class="thp-card-header">
+        <h3 class="thp-card-title">编辑兜底恢复</h3>
+      </header>
+      <label class="thp-switch-row">
+        <input v-model="编辑兜底开关" type="checkbox" />
+        <span class="thp-switch"></span>
+        <span class="thp-switch-label">编辑取消后自动恢复引擎渲染结果（默认开启）</span>
+      </label>
+      <p class="thp-hint">
+        ST 编辑取消时用消息原文重建楼层（原文含 Story_Background 等应隐藏标签），会覆盖已隐藏的
+        引擎显示。开启后，编辑取消事件后延时把引擎结果（已隐藏）写回 —— 解决「编辑取消后标签
+        没隐藏」。关闭 = 维持现状（不干预）。
+      </p>
+    </section>
+
     <!-- 事件执行顺序（ST-Prompt-Template 渲染冲突兼容） -->
     <section class="thp-card">
       <header class="thp-card-header">
@@ -148,6 +165,7 @@
 import { 渲染开关响应式, 设置渲染开关, 脚本清理响应式, 设置脚本清理开关, 拉取模板定义, 渲染错误, 已渲染正文模式响应式, 设置已渲染正文模式, 重置已渲染正文模式, 默认已渲染正文模式 } from './模板渲染服务';
 import { 滚动锁定响应式, 设置滚动锁定开关 } from './滚动锁定';
 import { 获取监听者表, 应用事件顺序, 读取事件顺序锚点, 保存事件顺序锚点, 事件锚点选项, type 监听者表 } from './事件顺序';
+import { 编辑兜底已启用, 设置编辑兜底 } from './编辑兜底';
 
 // A3：渲染总开关（与「诊断」页同一响应式 ref，两处实时联动；set 同步
 // localStorage + ref + 清理/收敛存量渲染）。
@@ -168,6 +186,13 @@ const 脚本清理开关 = computed({
 const 滚动锁定开关 = computed({
   get: () => 滚动锁定响应式.value,
   set: (v: boolean) => 设置滚动锁定开关(v),
+});
+
+// 编辑兜底恢复开关（读写 localStorage 键 thp_edit_recover_enabled，默认开启）：编辑取消后
+// 延时把引擎结果（已隐藏 Story_Background 等标签）写回，解决「编辑取消后标签没隐藏」。
+const 编辑兜底开关 = computed({
+  get: () => 编辑兜底已启用(),
+  set: (v: boolean) => 设置编辑兜底(v),
 });
 
 /* ---------- 事件执行顺序（ST-Prompt-Template 渲染冲突兼容） ---------- */
