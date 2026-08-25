@@ -408,56 +408,135 @@ async function 选中角色(avatar: string): Promise<void> {
   }
 }
 
+/* ---------- F2 决策表：本地同步判定 + 按文件独立分流 + 非角色文件事件重放 ---------- */
+
+/** 单个文件的分流结果：接管=本扩展已处理（可带 RP 卡写回 avatar）；重放=非角色文件还原生。 */
+type 分流结果 = { 动作: '已接管'; avatar: string | null } | { 动作: '重放' };
+
 /**
- * 处理一组角色文件（分流）：
- *   后端可达时：RP 卡 → upload?writeBack=1 + 刷新 + 选中（触发原生弹窗）；原生卡 → 原生导入。
- *   后端不可达（analyze 失败）→ 全部走原生导入（不阻塞导入流程）。
+ * 单文件决策表（《修复方案验证报告》§二）：
+ *   ① 本地快速判定为 RP（PNG rphub 块 / JSON rp_hub 特征）→ 插件上传（免网络等待）；
+ *   ② 后端 analyze 判定为 RP（手动标记等后端独有判据）→ 插件上传；
+ *   ③ 本地判定为 ST 标准角色卡（chara/ccv3/spec v2）→ 复刻原生的 原生导入()；
+ *   ④ 其余（世界书 / 预设 / 背景图 / 损坏 / unknown 且后端无记录）→ 重放给原生，
+ *      保证预设 JSON、世界书、backgrounds 等原生拖拽场景行为不被改变。
  */
-export async function 处理文件组(files: File[]): Promise<void> {
-  const 列表 = Array.isArray(files) ? files : [];
-  const 原生头像: string[] = [];
-  let RP头像: string | null = null;
-  let 后端失败 = 0;
-  for (const file of 列表) {
-    const { rp, 失败, 通道 } = await 分析文件(file);
-    if (失败) {
-      后端失败 += 1;
-      // 后端 analyze 与本地判定都失败（损坏 / 不支持的格式）→ 回退原生导入 + 明确提示
-      console.warn(`[第三部] 卡类型判定失败（后端 analyze + 本地判定均不可用），文件「${file.name}」回退为酒馆原生导入`);
-      const a = await 原生导入(file);
-      if (a) 原生头像.push(a);
-      continue;
-    }
-    if (rp) {
-      const a = await 上传RP卡(file);
-      if (a) RP头像 ??= a;
-      toastr.success(`RP 卡已上传${a ? `：${a}` : '（插件已落盘，写回 ST 失败）'}（判定：${通道}）`);
+async function 分流单个文件(file: File): Promise<分流结果> {
+  const local = await 本地判定卡类型(file);
+  if (local === 'rp') {
+    return { 动作: '已接管', avatar: await 接管上传RP卡(file, '本地') };
+  }
+  const { rp, 失败 } = await 分析文件(file);
+  if (!失败 && rp) {
+    return { 动作: '已接管', avatar: await 接管上传RP卡(file, '后端') };
+  }
+  if (local === 'st') {
+    const a = await 原生导入(file);
+    if (a) {
+      toastr.success(`已按酒馆原生流程导入角色：${a}`);
     } else {
-      const a = await 原生导入(file);
-      if (a) 原生头像.push(a);
-      toastr.success(`已按酒馆原生流程导入：${a ?? file.name}（判定：${通道}）`);
+      toastr.error(`角色导入失败：${file.name}`);
+    }
+    return { 动作: '已接管', avatar: null };
+  }
+  return { 动作: '重放' };
+}
+
+/** RP 卡上传 + 成功提示（上传失败提示已在 上传RP卡 内部）；返回写回的标准卡 avatar（可能 null）。 */
+async function 接管上传RP卡(file: File, 通道: '本地' | '后端'): Promise<string | null> {
+  const a = await 上传RP卡(file);
+  toastr.success(`RP 卡已上传${a ? `：${a}` : '（插件已落盘，写回 ST 失败）'}（判定：${通道}）`);
+  return a;
+}
+
+/**
+ * 处理一组白名单文件（drop/change 共用）：按文件独立决策，返回需要重放还原生流程的文件。
+ * 废除旧「组内含 RP 卡即整组接管」——多文件混合时各走各的通道。
+ */
+export async function 处理文件组(files: File[]): Promise<File[]> {
+  const 列表 = Array.isArray(files) ? files : [];
+  let RP头像: string | null = null;
+  let 已接管数 = 0;
+  const 重放: File[] = [];
+  for (const file of 列表) {
+    const 结果 = await 分流单个文件(file);
+    if (结果.动作 === '已接管') {
+      已接管数 += 1;
+      RP头像 ??= 结果.avatar;
+    } else {
+      重放.push(file);
     }
   }
-  if (后端失败 > 0 && 后端失败 === 列表.length) {
-    console.warn('[第三部] 全部文件卡类型判定失败，导入已回退为酒馆原生流程');
-  }
-  if (原生头像.length > 0 || RP头像) {
+  // 任一文件被本扩展接管（上传/导入）后才刷新角色列表并尝试自动选中；纯重放组不动原生流程
+  if (已接管数 > 0) {
     await 刷新列表();
     if (RP头像) await 选中角色(RP头像);
   }
+  return 重放;
 }
 
 /* ---------- 拦截挂载（浏览器 iframe 环境） ---------- */
 
 let 已启动 = false;
 let 已关闭 = false;
-/** 已挂监听的目标文档集合（防重复挂载） */
-const 已挂载文档 = new Set<Document>();
-let drop处理器: ((e: Event) => void) | null = null;
-let change处理器: ((e: Event) => void) | null = null;
 
-/** 拦截拖拽（捕获阶段，父窗口 document）。返回 true = 已接管（ST 不再处理） */
+interface ImportDispatcher {
+  handleDrop: (e: DragEvent) => boolean;
+  handleChange: (e: Event) => boolean;
+}
+
+declare global {
+  interface Window {
+    __RPH_IMPORT_DISPATCHER__?: ImportDispatcher;
+  }
+}
+
+/** F2：本扩展自己合成并派发的重放 drop 事件（防止分发器二次捕获造成死循环） */
+const 重放事件 = new WeakSet<DragEvent>();
+
+/** 目录拖入检测：webkitGetAsEntry().kind === 'directory' → 整组放行原生（原生支持文件夹批量导入）。 */
+function 含目录拖入(e: DragEvent): boolean {
+  const items = e.dataTransfer?.items;
+  if (!items) return false;
+  for (let i = 0; i < items.length; i++) {
+    try {
+      const entry = (items[i] as DataTransferItem & { webkitGetAsEntry?: () => { kind?: string } | null })
+        .webkitGetAsEntry?.();
+      if (entry && entry.kind === 'directory') return true;
+    } catch {
+      // 条目访问失败忽略，继续检查其余条目
+    }
+  }
+  return false;
+}
+
+/** 合成 bubble 阶段 drop 事件把文件还原生流程（复用原 dataTransfer；仅重放子集时重建 DataTransfer）。 */
+function 重放drop(e: DragEvent, files?: File[]): void {
+  try {
+    let dataTransfer = e.dataTransfer;
+    if (files && files.length > 0) {
+      const 重建 = new DataTransfer();
+      for (const f of files) 重建.items.add(f);
+      dataTransfer = 重建;
+    }
+    if (!dataTransfer || !dataTransfer.files.length) return;
+    const 合成 = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer });
+    重放事件.add(合成);
+    (e.target as Element | null)?.dispatchEvent(合成);
+    console.info(`[第三部] 导入拦截：已重放 ${dataTransfer.files.length} 个非角色文件给酒馆原生流程`);
+  } catch (err) {
+    console.warn('[第三部] 导入拦截：重放非角色文件失败：', err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * 拦截拖拽（捕获阶段，父窗口 document）。返回 true = 已接管。
+ * F2 决策表：同步取得处理权（preventDefault + stopPropagation + stopImmediatePropagation），
+ * 异步按文件独立分流——RP 卡上传 / ST 角色卡 原生导入() / 其余（世界书、预设、背景图等）
+ * 以合成 drop 事件重放还原生流程，杜绝旧版「无差别拦截破坏原生」与「异步判定后阻断失效」两类缺陷。
+ */
 function 拦截drop(e: DragEvent): boolean {
+  if (重放事件.has(e)) return false; // 本扩展合成的重放事件 → 直接放行
   if (已关闭) {
     console.debug('[第三部] 导入拦截已关闭（__thp导入拦截__.开启() 恢复）');
     return false;
@@ -489,30 +568,62 @@ function 拦截drop(e: DragEvent): boolean {
       // closest 异常忽略，继续拦截
     }
   }
+  // 文件夹拖入 → 整组放行原生（原生 webkitGetAsEntry 批量导入）
+  if (含目录拖入(e)) {
+    console.debug('[第三部] 拖入包含文件夹 → 整组交 ST 原生批量导入');
+    return false;
+  }
+
+  // 同步接管（此时无法区分内容，但白名单内文件的浏览器默认行为与 ST 处理权一并收归本扩展；
+  // 非 RP/非角色的文件稍后经 重放drop 完整还原生流程）
   e.preventDefault();
   e.stopPropagation();
   e.stopImmediatePropagation();
-  console.info('[第三部] 导入拦截命中：接管 %d 个角色文件 →', 角色文件.length, 角色文件.map(f => f.name));
-  void 处理文件组(角色文件);
+  void (async () => {
+    const 重放 = await 处理文件组(角色文件);
+    if (重放.length > 0) {
+      重放drop(e, 重放.length === 角色文件.length ? undefined : 重放);
+    }
+  })();
   return true;
 }
 
-/** 拦截文件选择（捕获阶段，父窗口 document；命中 #character_import_file）。返回 true = 已接管 */
+/**
+ * 拦截文件选择（捕获阶段，父窗口 document；命中 #character_import_file）。返回 true = 已接管。
+ * 该 input 的用户意图就是「导入角色」→ 无需重放：RP 卡上传，其余一律 原生导入()
+ * （含 yaml/charx/byaf 等本地不可判定格式，与原生行为一致）；finally 清空 input.value
+ * （保证同一文件可重复选择触发 change）。
+ */
 function 拦截change(e: Event): boolean {
   if (已关闭 || !导入拦截已启用()) return false;
   const input = e.target as HTMLInputElement | null;
   if (!input || input.id !== 'character_import_file') return false;
   const files = input.files ? Array.from(input.files) : [];
   if (files.length === 0) return false;
+
+  // 同步接管：change 监听为同步派发，任何「先 await 再阻断」的写法都晚于 ST 原生 handler（F2 死代码教训）
   e.preventDefault();
   e.stopPropagation();
   e.stopImmediatePropagation();
-  console.info('[第三部] 导入拦截命中：接管文件选择 %d 个 →', files.length, files.map(f => f.name));
   void (async () => {
     try {
-      await 处理文件组(files);
+      for (const f of files) {
+        const local = await 本地判定卡类型(f);
+        if (local === 'rp') {
+          await 接管上传RP卡(f, '本地');
+          continue;
+        }
+        const { rp, 失败 } = await 分析文件(f);
+        if (!失败 && rp) {
+          await 接管上传RP卡(f, '后端');
+          continue;
+        }
+        const a = await 原生导入(f);
+        if (a) toastr.success(`已按酒馆原生流程导入角色：${a}`);
+        else toastr.error(`角色导入失败：${f.name}`);
+      }
+      await 刷新列表();
     } finally {
-      // 清空 input 值，允许重复导入同一文件（对齐 ST change 处理器 script.js:11967）
       input.value = '';
     }
   })();
@@ -521,97 +632,63 @@ function 拦截change(e: Event): boolean {
 
 /**
  * 启动导入拦截（index.ts 挂载时调用）。
- * 本扩展脚本跑在酒馆助手隐藏 iframe（TH-script--*，srcdoc/blob，与 ST 页面同源）：
- *   挂捕获阶段监听到【父窗口 document】——拖拽/选择事件发生在父文档上，iframe 自身收不到。
- * 健壮挂载：对 window.parent.document / window.top.document / window.document 都尝试挂载
- *   （去重），覆盖 iframe 嵌套深度不同的情况；父窗口跨域不可访问（极端情况）→ 降级不拦截。
- * 诊断：启动时输出挂载目标与总开关状态；每次 drop/change 命中或放行都输出原因。
+ * 在 window.top 上挂载单例代理分发器 window.__RPH_IMPORT_DISPATCHER__，iframe 重载时仅替换 handler，杜绝多次重复绑定。
  */
 export function 启动导入拦截(): void {
   if (已启动) return;
   已启动 = true;
-  drop处理器 = e => 拦截drop(e as DragEvent);
-  change处理器 = e => 拦截change(e);
 
-  const 候选文档: Array<{ 名: string; 文档: Document | null | undefined }> = [];
-  try {
-    const 父 = window.parent?.document;
-    候选文档.push({ 名: 'parent.document', 文档: 父 });
-  } catch {
-    // 跨域 / 访问异常
-  }
-  try {
-    const 顶 = window.top?.document;
-    if (顶 && 顶 !== 候选文档[0]?.文档) 候选文档.push({ 名: 'top.document', 文档: 顶 });
-  } catch {
-    // 跨域 / 访问异常
-  }
-  try {
-    const 自 = document;
-    if (自 && 自 !== 候选文档[0]?.文档 && 自 !== 候选文档[1]?.文档) 候选文档.push({ 名: '自身 document', 文档: 自 });
-  } catch {
-    // 忽略
-  }
+  const dispatcher: ImportDispatcher = {
+    handleDrop: e => 拦截drop(e),
+    handleChange: e => 拦截change(e),
+  };
 
-  let 挂载数 = 0;
-  for (const { 名, 文档 } of 候选文档) {
-    if (!文档 || 已挂载文档.has(文档)) continue;
-    文档.addEventListener('drop', drop处理器, true);
-    文档.addEventListener('change', change处理器, true);
-    已挂载文档.add(文档);
-    挂载数 += 1;
-    console.info(`[第三部] 导入拦截：已挂载 drop/change 捕获监听 → ${名}`);
-  }
+  const 宿主窗口 = window.top ?? window.parent ?? window;
+  宿主窗口.__RPH_IMPORT_DISPATCHER__ = dispatcher;
 
-  if (挂载数 === 0) {
-    console.warn('[第三部] 无法访问任何目标 document，导入拦截不可用（ST 原生导入流程不受影响）');
+  // 如果宿主尚未绑定代理监听器，则进行一次性绑定
+  const doc = 宿主窗口.document;
+  if (doc && !(doc as any).__RPH_LISTENER_ATTACHED__) {
+    (doc as any).__RPH_LISTENER_ATTACHED__ = true;
+    doc.addEventListener('drop', (e: DragEvent) => {
+      宿主窗口.__RPH_IMPORT_DISPATCHER__?.handleDrop(e);
+    }, true);
+    doc.addEventListener('change', (e: Event) => {
+      宿主窗口.__RPH_IMPORT_DISPATCHER__?.handleChange(e);
+    }, true);
+    console.info('[第三部] 导入拦截：已在宿主 document 注册单例捕获分发器');
   }
 
   // 浏览器控制台诊断入口：
-  //   __thp导入拦截__.设置开关(false) 关闭拦截；__thp导入拦截__.处理文件组([file]) 手动分流
   try {
     (window as unknown as Record<string, unknown>).__thp导入拦截__ = {
       判定是否为RP卡,
       导入拦截已启用,
       设置导入拦截开关,
       处理文件组,
-      已挂载文档数: () => 已挂载文档.size,
       关闭: () => { 已关闭 = true; },
       开启: () => { 已关闭 = false; },
     };
   } catch {
-    // 极少数环境不允许扩展 window，忽略
+    // 忽略
   }
 
-  console.info(`[第三部] 导入拦截已启动：拖入 / 文件选择 → RP 卡（upload?writeBack=1）vs 酒馆原生卡分流（总开关=${导入拦截已启用() ? '开' : '关'}，已挂载 ${挂载数} 个文档）`);
+  console.info(`[第三部] 导入拦截已启动：单例代理模式（总开关=${导入拦截已启用() ? '开' : '关'}）`);
 }
 
 /**
- * 停止导入拦截并卸载所有已挂载的捕获监听（🔴-5 修复）。
- * 背景：本脚本跑在酒馆助手隐藏 iframe，但监听挂在 parent/top/自身 document 上——TH「实时监听」
- * 热重载 = 销毁旧 iframe 新建 iframe，挂在父文档上的捕获监听不会随 iframe 关闭自动移除；
- * 不卸载会残留旧闭包（含旧 SillyTavern 引用），一次 drop/change 触发 N 次处理（重复导入/上传）
- * 且内存泄漏。index.ts 的 pagehide 回调调用本函数（对比 挂编辑原文回显 用 window.__rphEditObserver
- * 跨重载 disconnect，本模块此前无等价机制）。
+ * 停止导入拦截并清理分发器。
  */
 export function 停止导入拦截(): void {
-  if (!已启动 && 已挂载文档.size === 0) return;
-  for (const 文档 of 已挂载文档) {
-    try {
-      if (drop处理器) 文档.removeEventListener('drop', drop处理器, true);
-      if (change处理器) 文档.removeEventListener('change', change处理器, true);
-    } catch {
-      // 跨域 / 文档已销毁 → 忽略
-    }
+  const 宿主窗口 = window.top ?? window.parent ?? window;
+  if (宿主窗口.__RPH_IMPORT_DISPATCHER__) {
+    delete 宿主窗口.__RPH_IMPORT_DISPATCHER__;
   }
-  已挂载文档.clear();
-  drop处理器 = null;
-  change处理器 = null;
   已启动 = false;
   try {
     delete (window as unknown as Record<string, unknown>).__thp导入拦截__;
   } catch {
     // 忽略
   }
-  console.info('[第三部] 导入拦截已停止：已卸载所有 drop/change 捕获监听');
+  console.info('[第三部] 导入拦截已停止：已注销分发器 handler');
 }

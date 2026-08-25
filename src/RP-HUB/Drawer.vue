@@ -68,31 +68,59 @@ const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ close: [] }>();
 
 /**
- * Teleport 目标 = 【主文档】body 元素（Fix A，状态栏点不动排查-真全屏回归根因修复）。
- *
- * 背景：本扩展脚本跑在酒馆助手隐藏脚本 iframe（TH-script--*，display:none）内。Vue
- * runtime-dom 在 bundle 模块加载时捕获 document（nodeOps: `const doc = typeof document
- * !== 'undefined' ? document : null` + `querySelector: sel => doc.querySelector(sel)`）——
- * 捕获的是 iframe 的 document。Teleport 字符串目标（to="body"）经 resolveTarget →
- * select('body') → doc.querySelector('body') 解析成 iframe 的 <body> → overlay 被送进
- * 隐藏 iframe → 点击「打开面板」无反应（浏览器实测：主文档 .thp-overlay count=0）。
- *
- * 修复：取 window.parent.document.body（主文档，app 入口即挂主文档 #extensions_settings2，
- * srcdoc iframe 与主文档同源可访问）传【元素对象】——Teleport 对非字符串目标走
- * resolveTarget 直接返回该元素分支，不再经过 iframe 的 querySelector。overlay 节点插入
- * 主文档 body 时自动 adopt（与 app 挂载用父窗口 jQuery 同一机制）。
- *
- * 降级：parent 访问异常 / 无 parent（非 iframe 直接运行，如调试）→ 返回 null → Teleport
- * 不移动目标（overlay 留在 app 容器内，仍可见可点，功能不丢）。
+ * F3：宿主 id 携带脚本实例标识（getScriptId 同一脚本热重载稳定、不同脚本实例唯一）
+ * → 根除「多个同模板扩展共用 #rph-drawer-teleport-host」的互踩问题。
+ */
+const TELEPORT_HOST_ID = (() => {
+  let 标识 = 'default';
+  try {
+    const raw = getScriptId?.() ?? '';
+    const 清洗 = String(raw).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+    if (清洗) 标识 = 清洗;
+  } catch {
+    // getScriptId 不可用（极端环境）→ 用默认标识，退化为共享 id 但不崩溃
+  }
+  return `rph-drawer-teleport-host-${标识}`;
+})();
+
+/**
+ * 只清理【属于本实例】的孤儿宿主（同 id 只可能来自本脚本的上一具残留 iframe）。
+ * 不再全局扫描 .thp-overlay —— 全局清扫会误删其它扩展/卡面的同名节点（F3 验证结论）。
+ * 调用时机必须严格限定：宿主创建【之前】（setup 首建）或本组件卸载/pagehide（清自己的尾巴）。
+ * ⚠️ 严禁在 onMounted 里调用 —— computed 无响应式依赖永不重建，那会把刚挂载自身内容的
+ * 宿主一并拆掉且永不恢复（旧实现的面板自拆缺陷根因）。
+ */
+function 清理自身孤儿宿主(): void {
+  try {
+    const doc = (window.parent as Window | null)?.document;
+    const 旧宿主 = doc?.getElementById(TELEPORT_HOST_ID);
+    if (旧宿主) 旧宿主.remove();
+  } catch {
+    // 跨域 / 访问异常忽略
+  }
+}
+
+/**
+ * Teleport 目标 = 【主文档】专属宿主容器元素。先扫后建：先移除本实例的孤儿宿主，
+ * 再创建并追加新宿主（保证 Teleport 内容挂进的是本次新建的存活节点）。
  */
 const mainBody = computed<HTMLElement | null>(() => {
   try {
     const p = (window.parent as Window | null)?.document;
-    if (p?.body) return p.body as HTMLElement;
+    if (p?.body) {
+      清理自身孤儿宿主();
+      let host = p.getElementById(TELEPORT_HOST_ID);
+      if (!host) {
+        host = p.createElement('div');
+        host.id = TELEPORT_HOST_ID;
+        p.body.appendChild(host);
+      }
+      return host as HTMLElement;
+    }
   } catch {
     // 跨域 / 访问异常 → 降级 null
   }
-  return null; // null → Teleport 不移动，overlay 留在 app 容器内（仍可见）
+  return null;
 });
 
 const active = ref('diagnose');
@@ -114,16 +142,19 @@ const on_keydown = (event: KeyboardEvent) => {
   }
 };
 
-// UI-A1 修复：modal Teleport 到父文档、焦点在父文档 → Escape 监听须挂在 parent（脚本跑在隐藏 iframe）
 function 父窗口(): Window {
   try { return window.parent && window.parent !== window ? window.parent : window; } catch { return window; }
 }
 
 onMounted(() => {
+  // F3：不再做任何清理（自拆缺陷）——孤儿清扫已前置到 mainBody 首建；此处只挂监听
   父窗口().addEventListener('keydown', on_keydown);
+  $(window).on('pagehide', 清理自身孤儿宿主);
 });
 
 onBeforeUnmount(() => {
   父窗口().removeEventListener('keydown', on_keydown);
+  $(window).off('pagehide', 清理自身孤儿宿主);
+  清理自身孤儿宿主();
 });
 </script>

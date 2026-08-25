@@ -5,7 +5,8 @@
  *   AI 回复正文最末尾带 <ui_template_updates> 更新块
  *     → 监听 MESSAGE_RECEIVED / MESSAGE_EDITED（eventMakeFirst，先于 rp-hub-compat 引擎处理）
  *     → 转换更新块（剥离 + 解析 JSON + 按模板 id 分组）
- *     → updateVariablesWith 写进【当前这条楼层消息】的变量 chat[i].variables[swipe_id].rp_hub
+ *     → 写楼层变量（唯一存储出口）：多页消息经 TH setChatMessages 整组写
+ *       variables[swipe_id].rp_hub（路线 b2，保护各槽他键）；单槽消息走 updateVariablesWith
  *     → 更新块从正文剥离（消息 .mes 与当前 swipe 原文同步剥离，对用户 / 对 AI 隐藏）
  *
  * 真相源：酒馆助手消息楼层变量。楼层 iframe 渲染时 RP-Hub 模板脚本经
@@ -16,8 +17,9 @@
  *   - 本服务用 eventMakeFirst 注册 MESSAGE_RECEIVED，先于 rp-hub-compat 的 processAndCover
  *     执行 → 剥离发生在 rp-hub-compat snapshotRaw/commitMessageView 之前，其 rph_raw_mes
  *     快照即为剥离后的正文；本扩展与 rp-hub-compat 相互独立，均可单独工作。
- *   - 写入用酒馆助手 API updateVariablesWith({type:'message'})，由酒馆助手负责
- *     swipe 数组归一化与 saveChatConditionalDebounced 落盘。
+ *   - 多页写入用 TH setChatMessages 的 swipes_data 整组通道（refresh:'none'），由酒馆助手
+ *     负责 swipe 数组归一化与 saveChatConditionalDebounced 落盘；单槽消息仍走
+ *     updateVariablesWith({type:'message'})。读取/写入一律收敛到本文件出口函数。
  *
  * 编辑回显原始文本（E 需求，2026-08 用户提出）：
  *   ST 编辑框（#curEditTextarea，script.js:8212）默认填 chat[id].mes（已剥离更新块）
@@ -55,29 +57,149 @@ function 获取消息(messageId: number): SillyTavern.ChatMessage | null {
   }
 }
 
-/** 读取某楼层的 rp_hub 池表（消息变量 getVariables type:'message'，深拷贝，异常降级为空表） */
-export function 读取楼层变量(messageId: number): 模板池表 {
+/* ---------- 存储契约（路线 b2：原生 swipe 槽 + TH setChatMessages 整组写） ----------
+ * 依据《修复方案验证报告》§1：ST 原生不感知消息级 variables（切 swipe 不换槽），
+ * 每个槽顶层 rp_hub 即该 swipe 的池；TH getVariables/updateVariablesWith 只能寻址活跃槽，
+ * 多页写入必须经 setChatMessages 的 swipes_data 整组通道（refresh:'none' 避免重渲染抖动）。
+ */
+
+/** 判定一个槽对象是否为旧版「数字键 cramming 字典」形态（修复#4 初版的错误布局：所有
+ *  swipe 的 {rp_hub} 被塞进当时活跃槽下的 "0"/"1"/… 数字键）。判定收紧为：
+ *  键全为纯数字 且 至少一个值是含 rp_hub 键的对象 —— 避免把合法数字模板 id 误判。 */
+function 是数字键字典(格: unknown): boolean {
+  if (!格 || typeof 格 !== 'object' || Array.isArray(格)) return false;
+  const keys = Object.keys(格 as Record<string, unknown>);
+  if (keys.length === 0 || !keys.every(k => /^\d+$/.test(k))) return false;
+  return keys.some(k => {
+    const 条目 = (格 as Record<string, unknown>)[k];
+    return !!条目 && typeof 条目 === 'object' && !Array.isArray(条目) && 'rp_hub' in (条目 as Record<string, unknown>);
+  });
+}
+
+/** 把槽组内的旧 cramming 字典幂等分发到各自槽位顶层，然后清空字典槽（首次写入时自动迁移）。 */
+function 迁移数字键字典(槽组: Record<string, unknown>[]): void {
+  for (let s = 0; s < 槽组.length; s++) {
+    const 格 = 槽组[s];
+    if (!是数字键字典(格)) continue;
+    for (const [键, 条目] of Object.entries(格)) {
+      const i = Number(键);
+      const 池 = (条目 as Record<string, unknown>)?.[rp_hub命名空间];
+      if (!Number.isInteger(i) || i < 0 || !池 || typeof 池 !== 'object') continue;
+      while (槽组.length <= i) 槽组.push({});
+      const 目标 = 槽组[i];
+      const 已有 = 目标[rp_hub命名空间];
+      目标[rp_hub命名空间] = {
+        ...((已有 && typeof 已有 === 'object' && !Array.isArray(已有)) ? 已有 as 模板池表 : {}),
+        ...(池 as 模板池表),
+      };
+    }
+    槽组[s] = {}; // 字典数据已分发，清空该 cramming 槽
+  }
+}
+
+/** 归一化某楼层的变量槽数组（深拷贝，避免整组回写前污染 live 对象；兼容旧「非数组单槽」格式）。 */
+function 归一化变量槽(消息: SillyTavern.ChatMessage): Record<string, unknown>[] {
+  const 原始 = (消息 as { variables?: unknown }).variables;
+  const swipes = (消息 as { swipes?: unknown }).swipes;
+  const 槽数 = Math.max(Array.isArray(swipes) ? swipes.length : 1, 1);
+  if (Array.isArray(原始)) {
+    // 数组可能比 swipes 长/短 → 以两者最大长度为准，防丢数据
+    const 上限 = Math.max(槽数, 原始.length);
+    return _.range(上限).map(i => (_.cloneDeep(原始[i] ?? {}) as Record<string, unknown>));
+  }
+  if (原始 && typeof 原始 === 'object') {
+    return [_.cloneDeep(原始) as Record<string, unknown>]; // 旧单槽对象视作唯一槽
+  }
+  return _.range(槽数).map(() => ({}) as Record<string, unknown>);
+}
+
+/**
+ * 读取某楼层的 rp_hub 池表（唯一存储出口；异常降级为空表）。
+ * 三段回退链（《修复方案验证报告》§1.3）：
+ *   ① 数字键 cramming 字典识别展开（修复#4 初版遗留布局，任一槽含目标键即读出）
+ *   ② 本槽（当前或指定 swipe）顶层 rp_hub —— b2 正式契约
+ *   ③ 历史全局顶层（旧非数组单槽对象的 rp_hub）
+ */
+export function 读取楼层变量(messageId: number, swipeId?: number): 模板池表 {
   try {
-    const 全表 = getVariables({ type: 'message', message_id: messageId });
-    const 池表 = ((_.get(全表, rp_hub命名空间, {}) ?? {}) as 模板池表);
-    return _.cloneDeep(池表);
+    const 消息 = 获取消息(messageId);
+    if (!消息) return {};
+    const targetSwipe = swipeId ?? ((消息 as { swipe_id?: number }).swipe_id ?? 0);
+    const 原始 = (消息 as { variables?: unknown }).variables;
+    if (Array.isArray(原始)) {
+      // ① cramming 字典识别展开
+      for (const 格 of 原始) {
+        if (!是数字键字典(格)) continue;
+        const 池 = _.get(格, [String(targetSwipe), rp_hub命名空间]);
+        if (池 && typeof 池 === 'object') return _.cloneDeep(池) as 模板池表;
+      }
+      // ② 本槽顶层 rp_hub
+      const 本槽 = 原始[targetSwipe] as Record<string, unknown> | undefined;
+      const 池2 = _.get(本槽, rp_hub命名空间);
+      if (池2 && typeof 池2 === 'object') return _.cloneDeep(池2) as 模板池表;
+    } else if (原始 && typeof 原始 === 'object') {
+      // ③ 历史全局顶层
+      const 池3 = _.get(原始, rp_hub命名空间);
+      if (池3 && typeof 池3 === 'object') return _.cloneDeep(池3) as 模板池表;
+    }
+    return {};
   } catch {
     return {};
   }
 }
 
 /**
- * 把池表写进某楼层的消息变量（updateVariablesWith 读→改→写，type:'message'）。
- * 合并策略：`{ ...远程池, ...新池 }` —— 只覆盖本批更新涉及的模板池，
- * 该楼层已有 / 其余脚本写入的模板池保留（仅该楼层局部，不触碰 chat 层）。
- * @returns 是否成功
+ * 轻量读取某楼层当前 swipe 的模板 id 列表（不深拷贝池内容，供扫描元信息使用；
+ * 与 读取楼层变量 走同一三段回退链）。
  */
-export function 写楼层变量(messageId: number, 池表: 模板池表): boolean {
+export function 读取楼层池键列表(messageId: number, swipeId?: number): string[] {
   try {
-    updateVariablesWith(变量表 => {
-      const 远程 = ((_.get(变量表, rp_hub命名空间, {}) ?? {}) as 模板池表);
-      return _.set(变量表, rp_hub命名空间, { ...远程, ...池表 });
-    }, { type: 'message', message_id: messageId });
+    const 消息 = 获取消息(messageId);
+    if (!消息) return [];
+    const targetSwipe = swipeId ?? ((消息 as { swipe_id?: number }).swipe_id ?? 0);
+    const 原始 = (消息 as { variables?: unknown }).variables;
+    let 池: unknown;
+    if (Array.isArray(原始)) {
+      for (const 格 of 原始) {
+        if (!是数字键字典(格)) continue;
+        池 = _.get(格, [String(targetSwipe), rp_hub命名空间]);
+        if (池 && typeof 池 === 'object') break;
+      }
+      if (!(池 && typeof 池 === 'object')) {
+        池 = _.get(原始[targetSwipe] as Record<string, unknown> | undefined, rp_hub命名空间);
+      }
+    } else if (原始 && typeof 原始 === 'object') {
+      池 = _.get(原始, rp_hub命名空间);
+    }
+    if (!池 || typeof 池 !== 'object' || Array.isArray(池)) return [];
+    return Object.keys(池 as Record<string, unknown>);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 把池表写进某楼层的指定 swipe 槽（唯一存储出口）。
+ * - 带 swipes 的多页消息：整组读槽（含 cramming 幂等迁移）→ 只改目标槽 rp_hub 键
+ *   （保护各槽 stat_data 等他键，MVU 共槽安全）→ TH setChatMessages swipes_data 整组回写。
+ * - 无 swipes 的单槽消息：保留 updateVariablesWith({type:'message'}) 顶层合并。
+ * @returns 是否成功受理（多页写为异步受理，失败经 同步错误 上报）
+ */
+export function 写楼层变量(messageId: number, 池表: 模板池表, swipeId?: number): boolean {
+  try {
+    const 消息 = 获取消息(messageId);
+    if (!消息) return false;
+    const targetSwipe = swipeId ?? ((消息 as { swipe_id?: number }).swipe_id ?? 0);
+    const swipes = (消息 as { swipes?: unknown }).swipes;
+    const 有多页 = Array.isArray(swipes) && swipes.length > 0;
+    if (!有多页) {
+      updateVariablesWith(变量表 => {
+        const 远程 = ((_.get(变量表, rp_hub命名空间, {}) ?? {}) as 模板池表);
+        return _.set(变量表, rp_hub命名空间, { ...远程, ...池表 });
+      }, { type: 'message', message_id: messageId });
+    } else if (!写多页楼层变量(messageId, new Map([[targetSwipe, 池表]]))) {
+      return false;
+    }
     上次写入时间.value = new Date().toISOString();
     同步错误.value = '';
     return true;
@@ -87,18 +209,68 @@ export function 写楼层变量(messageId: number, 池表: 模板池表): boolea
   }
 }
 
-/** V2 修复：剥离全部 swipe 的更新块（各自独立剥离，防浏览任一 swipe 时回显更新块）。 */
-function 剥离全部swipe(消息: SillyTavern.ChatMessage): void {
+/**
+ * 多页消息的批量写出口：一次 setChatMessages 整组回写多个 swipe 槽。
+ * 必须整组读写——逐槽调用会因「后写基于旧快照」把先写的其他槽合并结果覆盖掉。
+ * @param 各池 swipe 下标 → 该 swipe 的池表增量（与槽内既有 rp_hub 浅合并）
+ */
+function 写多页楼层变量(messageId: number, 各池: Map<number, 模板池表>): boolean {
+  try {
+    const 消息 = 获取消息(messageId);
+    if (!消息) return false;
+    const 槽组 = 归一化变量槽(消息);
+    迁移数字键字典(槽组); // 首次写入即完成存量 cramming 数据的幂等迁移
+    for (const [i, 池表] of 各池) {
+      if (i < 0) continue;
+      while (槽组.length <= i) 槽组.push({});
+      const 目标槽 = 槽组[i];
+      const 远程 = ((_.get(目标槽, rp_hub命名空间, {}) ?? {}) as 模板池表);
+      目标槽[rp_hub命名空间] = { ...远程, ...池表 };
+    }
+    void setChatMessages([{ message_id: messageId, swipes_data: 槽组 }], { refresh: 'none' })
+      .catch((e: unknown) => {
+        同步错误.value = `setChatMessages 失败：${String(e instanceof Error ? e.message : e)}`;
+        记录日志('变量同步', `#${messageId} 多页变量写回失败：${同步错误.value}`, 'warn');
+      });
+    return true;
+  } catch (e) {
+    同步错误.value = String(e instanceof Error ? e.message : e);
+    return false;
+  }
+}
+
+/**
+ * 批量剥离全部 swipe 的更新块：每个 swipe 独立解析，收集为一次整组写（修复#4 路线 b2），
+ * 并把原文存入 rph_raw_swipes 字典、剥离正文回写 swipes[i]。
+ */
+function 剥离并同步全部swipes(消息: SillyTavern.ChatMessage, messageId: number): void {
   try {
     if (!Array.isArray(消息.swipes)) return;
+    消息.extra ??= {};
+    const rawSwipes: Record<number, string> =
+      (消息.extra.rph_raw_swipes && typeof 消息.extra.rph_raw_swipes === 'object')
+        ? (消息.extra.rph_raw_swipes as Record<number, string>)
+        : {};
+
+    const 各池 = new Map<number, 模板池表>();
     for (let i = 0; i < 消息.swipes.length; i++) {
       const sw = 消息.swipes[i];
       if (typeof sw !== 'string') continue;
-      const { 正文: 该正文 } = 转换更新块(sw);
-      if (该正文 !== sw) 消息.swipes[i] = 该正文;
+      const { 正文: 该正文, 变量表 } = 转换更新块(sw);
+      if (该正文 !== sw) {
+        rawSwipes[i] = sw; // 存入原文映射
+        消息.swipes[i] = 该正文;
+        if (变量表) {
+          各池.set(i, 变量表);
+        }
+      }
+    }
+    消息.extra.rph_raw_swipes = rawSwipes;
+    if (各池.size > 0) {
+      写多页楼层变量(messageId, 各池); // 单次整组写，杜绝逐槽竞态
     }
   } catch {
-    // 忽略（swipes 结构异常时跳过，不影响主流程）
+    // 忽略
   }
 }
 
@@ -159,20 +331,31 @@ export function 处理消息(messageId: number, 是编辑 = false): { handled: b
     try {
       消息.extra ??= {};
       消息.extra.rph_raw_full = 原文;
+      // 同步更新当前 swipe 的原文映射字典
+      const currentSwipe = 消息.swipe_id ?? 0;
+      const rawSwipes = (消息.extra.rph_raw_swipes && typeof 消息.extra.rph_raw_swipes === 'object')
+        ? (消息.extra.rph_raw_swipes as Record<number, string>)
+        : {};
+      rawSwipes[currentSwipe] = 原文;
+      消息.extra.rph_raw_swipes = rawSwipes;
       console.info(`[第三部] 变量同步：消息 #${messageId} 已存 AI 原文（${原文.length} 字符，含更新块）`);
     } catch (e) {
       console.warn('[第三部] 变量同步：存 rph_raw_full 失败：', e);
       // extra 不可写时忽略（回显降级为剥离后文本，不影响主流程）
     }
     消息.mes = 正文;
-    剥离全部swipe(消息); // V2：剥离全部 swipe（各自独立剥离）
+    剥离并同步全部swipes(消息, messageId); // V2/修复4：剥离并同步全部 swipe
     调度保存(); // C5：剥离改动落盘（防抖），避免重载/切聊天前更新块回显
-  } else if (是编辑 && 消息.extra && typeof 消息.extra.rph_raw_full === 'string') {
+  } else if (是编辑 && 消息.extra && (typeof 消息.extra.rph_raw_full === 'string' || 消息.extra.rph_raw_swipes)) {
     // V1 修复：仅编辑保存后无更新块（用户删除了更新块 / 手动清空）→ 清除原文标记，
     // 下次编辑框回显当前 mes（避免旧原文反复回写造成循环）。continue/append 重入不清除。
     try {
       delete 消息.extra.rph_raw_full;
-      console.info(`[第三部] 变量同步：消息 #${messageId} 无更新块，清除 rph_raw_full`);
+      const currentSwipe = 消息.swipe_id ?? 0;
+      if (消息.extra.rph_raw_swipes && typeof 消息.extra.rph_raw_swipes === 'object') {
+        delete (消息.extra.rph_raw_swipes as Record<number, string>)[currentSwipe];
+      }
+      console.info(`[第三部] 变量同步：消息 #${messageId} 无更新块，清除 rph_raw_full / rph_raw_swipes[${currentSwipe}]`);
       调度保存();
     } catch {
       // 忽略
@@ -188,7 +371,17 @@ export function 处理消息(messageId: number, 是编辑 = false): { handled: b
     return { handled: false, reason: 错误 ? '更新块解析失败' : '无更新块' };
   }
 
-  const ok = 写楼层变量(messageId, 变量表);
+  // 路线 b2：带 swipes 的多页消息，当前 swipe 的池已由上方 剥离并同步全部swipes 的
+  // 「一次整组写」覆盖（mes 与 swipes[swipe_id] 同源同内容）——此处若再单独写当前槽，
+  // 会基于旧槽组快照发起第二次 setChatMessages，把整组写刚合并的其他 swipe 槽覆盖掉（竞态）。
+  const swipes = (消息 as { swipes?: unknown }).swipes;
+  const 多页已整组写 = Array.isArray(swipes) && swipes.length > 0;
+  let ok: boolean;
+  if (多页已整组写) {
+    ok = true; // 整组写已受理（异步结果经 同步错误 上报）
+  } else {
+    ok = 写楼层变量(messageId, 变量表);
+  }
   if (ok) {
     // H-A：本消息带过 <ui_template_updates> 更新块且写池成功 → 置 rph_has_update 标记。
     // 模板渲染服务「RP 模板消息判别」据此判定本消息为模板消息（可接管显示）。
@@ -560,20 +753,27 @@ function 尝试回显(textarea: HTMLTextAreaElement): void {
     }
     const chat = (SillyTavern as unknown as { chat?: unknown[] })?.chat;
     const 消息 = (Array.isArray(chat) ? chat[Number(id)] : undefined) as
-      { extra?: { rph_raw_full?: unknown } } | undefined;
+      { swipe_id?: number; extra?: { rph_raw_full?: unknown; rph_raw_swipes?: Record<number, string> } } | undefined;
     console.info(
       `[第三部] 编辑回显：消息 #${id}，extra 键=[${消息?.extra ? Object.keys(消息.extra).join(', ') : '无'}]` +
       `，chat 长度=${Array.isArray(chat) ? chat.length : '非数组'}`,
     );
-    const 原文 = 消息?.extra?.rph_raw_full;
+    const currentSwipe = 消息?.swipe_id ?? 0;
+    // 优先从 rph_raw_swipes[currentSwipe] 回显对应 swipe 的原文，向后兼容 rph_raw_full
+    let 原文 = 消息?.extra?.rph_raw_swipes?.[currentSwipe];
     if (typeof 原文 !== 'string' || 原文.length === 0) {
-      console.info(`[第三部] 编辑回显：消息 #${id} 无 rph_raw_full（原文未存），保持剥离后文本`);
+      if (typeof 消息?.extra?.rph_raw_full === 'string' && 消息.extra.rph_raw_full.length > 0) {
+        原文 = 消息.extra.rph_raw_full;
+      }
+    }
+    if (typeof 原文 !== 'string' || 原文.length === 0) {
+      console.info(`[第三部] 编辑回显：消息 #${id} (Swipe ${currentSwipe}) 无原文记录（未存更新块），保持剥离后文本`);
       return;
     }
     已回显.add(textarea);
     textarea.value = 原文;
     textarea.setSelectionRange(原文.length, 原文.length);
-    console.info(`[第三部] 编辑回显：消息 #${id} 已回显 AI 原始文本（${原文.length} 字符，含更新块）`);
+    console.info(`[第三部] 编辑回显：消息 #${id} (Swipe ${currentSwipe}) 已回显 AI 原始文本（${原文.length} 字符，含更新块）`);
   } catch (e) {
     console.warn('[第三部] 编辑回显：替换异常：', e);
   }

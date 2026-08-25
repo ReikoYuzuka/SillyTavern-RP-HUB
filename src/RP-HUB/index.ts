@@ -1,12 +1,13 @@
 import './style.css';
 import { createScriptIdDiv, teleportStyle } from '@util/script';
 import 界面 from './界面.vue';
-import { 启动楼层记录服务 } from './楼层变量服务';
+import { 启动楼层记录服务, 刷新待采集 } from './楼层变量服务';
 import { 启动变量单向同步服务, 刷新待保存 } from './变量单向同步';
 import { 启动模板渲染服务 } from './模板渲染服务';
 import { 启动模型解析服务 } from './模型解析服务';
 import { 启动导入拦截, 停止导入拦截 } from './导入拦截';
 import { 启动滚动锁定 } from './滚动锁定';
+import { 立即落盘 } from './IndexedDB存储';
 import { 记录日志 } from './运行日志';
 
 $(() => {
@@ -40,6 +41,10 @@ $(() => {
     destroy();
     // V3 修复：flush 待落盘的防抖保存（避免 600ms 内刷新更新块回显）
     刷新待保存();
+    // F4 修复：flush IndexedDB 防抖落盘（立即落盘内部会 clearTimeout 防双写）+ 在途采集定时器，
+    // 避免 1.5s/800ms 防抖窗口内刷新或关页丢最近一批楼层变量记录
+    void 立即落盘();
+    刷新待采集();
     // 🔴-5 修复：卸载挂在 parent/top document 上的导入拦截捕获监听，
     // 避免 TH 热重载后旧监听残留（重复导入/上传 + 内存泄漏）。
     停止导入拦截();

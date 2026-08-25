@@ -21,8 +21,7 @@
  *   异步持久化见 IndexedDB存储.ts（内存立即更新 + 1.5s 防抖落盘，主线程零同步 I/O）。
  */
 import { ref } from 'vue';
-import {
-  生成差异,
+import { 生成差异,
   插入或覆盖记录,
   取前一楼记录,
   rp_hub构建快照,
@@ -32,9 +31,9 @@ import {
   type 聊天记录,
   type 存储结构,
 } from './楼层变量';
-import { rp_hub命名空间 } from './楼层变量';
 import { 记录日志 } from './运行日志';
 import { 读存储, 调度落盘, 立即落盘 } from './IndexedDB存储';
+import { 读取楼层变量 } from './变量单向同步';
 
 /** rp-hub-compat 后端插件地址（相对路径，ST 自动补当前 origin，换端口/域名/局域网都通） */
 const BASE = (() => {
@@ -142,12 +141,12 @@ async function 拉取当前卡片(): Promise<{ cardName: string; cardId: string 
 
 /**
  * 读取指定楼层的酒馆助手消息变量 rp_hub 并构建扁平快照（酒馆助手即真相）。
+ * 走 变量单向同步 的唯一存储出口（三段回退链：cramming 字典 → 本槽顶层 → 历史全局顶层）；
  * 不在响应式依赖上采集，直接读楼层变量最新值；读不到 / 异常返回空表。
  */
 function 读取楼层rp_hub快照(messageId: number | string): 扁平变量表 {
   try {
-    const 全表 = getVariables({ type: 'message', message_id: Number(messageId) });
-    return rp_hub构建快照(_.get(全表, rp_hub命名空间, {}));
+    return rp_hub构建快照(读取楼层变量(Number(messageId)));
   } catch {
     return {};
   }
@@ -203,6 +202,15 @@ function 调度采集(messageId: number | string): void {
       void 记录楼层(messageId);
     }, 采集延迟毫秒),
   );
+}
+
+/** F4：pagehide 时 flush 全部在途采集（清定时器并立即执行），避免刷新/关页丢最近一批楼层记录。 */
+export function 刷新待采集(): void {
+  采集定时器.forEach((timer, messageId) => {
+    clearTimeout(timer);
+    void 记录楼层(messageId);
+  });
+  采集定时器.clear();
 }
 
 /* ---------- 删除：清理历史（楼层变量随消息消失，酒馆助手天然处理） ---------- */

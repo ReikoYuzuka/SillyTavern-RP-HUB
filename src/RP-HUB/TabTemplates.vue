@@ -133,6 +133,29 @@
       </div>
     </section>
 
+    <!-- 自定义界面/文档片段切片模式（状态面板包裹与居中修复） -->
+    <section class="thp-card">
+      <header class="thp-card-header">
+        <h3 class="thp-card-title">文档 / 界面片段切片模式</h3>
+      </header>
+      <p class="thp-hint">
+        用于解决异形角色卡状态面板被正文渐变框包裹或居中失效问题：通过配置正则特征，在正文任意位置识别
+        状态面板/前端片段并自动切片围栏进 iframe（同时在面板前闭合正文 div 容器）。
+      </p>
+      <textarea
+        v-model="自定义文档模式文本"
+        class="thp-textarea"
+        rows="5"
+        spellcheck="false"
+        placeholder="每行一条正则表达式，例如：&#10;&lt;!doctype html&gt;&#10;&lt;html\b[^&gt;]*&gt;&#10;&lt;title\b[^&gt;]*&gt;[\s\S]*?&lt;\/title&gt;\s*&lt;style\b&#10;&lt;style\b[^&gt;]*&gt;[\s\S]*?(?:\.custom-|\.panel|body\s*\{|#mainPanel)[\s\S]*?&lt;\/style&gt;"
+      ></textarea>
+      <div class="thp-btn-group">
+        <button class="thp-btn thp-btn-primary" type="button" @click="保存自定义文档模式">保存</button>
+        <button class="thp-btn" type="button" @click="恢复默认自定义文档模式">恢复默认</button>
+      </div>
+      <p class="thp-hint">当前 {{ 自定义文档模式响应式.length }} 条切片模式。</p>
+    </section>
+
     <!-- 说明 -->
     <section class="thp-card">
       <header class="thp-card-header">
@@ -162,7 +185,7 @@
 </template>
 
 <script setup lang="ts">
-import { 渲染开关响应式, 设置渲染开关, 脚本清理响应式, 设置脚本清理开关, 拉取模板定义, 渲染错误, 已渲染正文模式响应式, 设置已渲染正文模式, 重置已渲染正文模式, 默认已渲染正文模式 } from './模板渲染服务';
+import { 渲染开关响应式, 设置渲染开关, 脚本清理响应式, 设置脚本清理开关, 拉取模板定义, 渲染错误, 已渲染正文模式响应式, 设置已渲染正文模式, 重置已渲染正文模式, 默认已渲染正文模式, 自定义文档模式响应式, 设置自定义文档模式, 重置自定义文档模式, 默认文档片段模式 } from './模板渲染服务';
 import { 滚动锁定响应式, 设置滚动锁定开关 } from './滚动锁定';
 import { 获取监听者表, 应用事件顺序, 读取事件顺序锚点, 保存事件顺序锚点, 事件锚点选项, type 监听者表 } from './事件顺序';
 import { 编辑兜底已启用, 设置编辑兜底 } from './编辑兜底';
@@ -245,6 +268,23 @@ function 恢复默认已渲染模式() {
   重置已渲染正文模式();
   已渲染模式文本.value = 默认已渲染正文模式.join('\n');
   toastr.success(`已恢复默认 ${默认已渲染正文模式.length} 条检测模式`);
+}
+
+/* ---------- 自定义文档/界面片段切片模式 ---------- */
+
+const 自定义文档模式文本 = ref(自定义文档模式响应式.value.join('\n'));
+
+function 保存自定义文档模式() {
+  const 行 = 自定义文档模式文本.value.split('\n').map((x) => x.trim()).filter(Boolean);
+  设置自定义文档模式(行);
+  自定义文档模式文本.value = 自定义文档模式响应式.value.join('\n');
+  toastr.success(`已保存 ${自定义文档模式响应式.value.length} 条文档片段切片模式`);
+}
+
+function 恢复默认自定义文档模式() {
+  重置自定义文档模式();
+  自定义文档模式文本.value = 默认文档片段模式.join('\n');
+  toastr.success(`已恢复默认 ${默认文档片段模式.length} 条切片模式`);
 }
 
 /* ---------- B1：操作按钮接线（原为占位） ---------- */

@@ -450,6 +450,57 @@ export function 检测已渲染正文(正文: string): boolean {
   return false;
 }
 
+/* ---------- 自定义完整文档/前端界面片段检测模式 ---------- */
+
+/** 自定义文档片段检测模式 localStorage 键 */
+const 自定义文档模式键 = 'thp_custom_doc_patterns';
+
+/** 默认文档片段切片模式清单 */
+export const 默认文档片段模式 = [
+  '<!doctype html>',
+  '<html\\b[^>]*>',
+  '<title\\b[^>]*>[\\s\\S]*?<\\/title>\\s*<style\\b',
+  '<style\\b[^>]*>[\\s\\S]*?(?:\\.custom-|\\.panel|body\\s*\\{|#mainPanel)[\\s\\S]*?<\\/style>',
+];
+
+/** 读取自定义文档片段切片模式清单 */
+export function 读取自定义文档模式(): string[] {
+  try {
+    const raw = localStorage.getItem(自定义文档模式键);
+    if (!raw) return [...默认文档片段模式];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const list = parsed.map((x) => String(x ?? '').trim()).filter(Boolean);
+      if (list.length > 0) return list;
+    }
+    return [...默认文档片段模式];
+  } catch {
+    return [...默认文档片段模式];
+  }
+}
+
+/** 自定义文档片段模式响应式 ref（供 UI 绑定） */
+export const 自定义文档模式响应式 = ref(读取自定义文档模式());
+
+/** 设置自定义文档片段模式清单 */
+export function 设置自定义文档模式(模式: string[]): void {
+  try {
+    const list = (Array.isArray(模式) ? 模式 : []).map((x) => String(x ?? '').trim()).filter(Boolean);
+    localStorage.setItem(自定义文档模式键, JSON.stringify([...new Set(list)]));
+  } catch {}
+  自定义文档模式响应式.value = 读取自定义文档模式();
+  记录日志('模板渲染', `自定义文档/界面片段检测模式已更新（${自定义文档模式响应式.value.length} 条）`);
+}
+
+/** 恢复默认文档片段模式 */
+export function 重置自定义文档模式(): void {
+  try {
+    localStorage.setItem(自定义文档模式键, JSON.stringify([...默认文档片段模式]));
+  } catch {}
+  自定义文档模式响应式.value = [...默认文档片段模式];
+  记录日志('模板渲染', `自定义文档/界面片段检测模式已恢复默认（${默认文档片段模式.length} 条）`);
+}
+
 /* ---------- 宿主上下文 ---------- */
 
 /** 读取 SillyTavern 上下文（iframe 注入全局，@types 未声明 getContext，参照现有取法） */
@@ -728,47 +779,87 @@ function 计算池哈希(池表: Record<string, unknown>): string {
 
 /* ---------- 合并楼层池（全兼容：对齐原版「状态跨楼层携带、每层渲染全部 active 模板」） ---------- */
 
-/** 各层合并池缓存：merged[k] = 合并(merged[k-1], 第 k 层池)（顺序滚动合并，O(n)） */
-const 合并缓存 = new Map<number, 模板池表>();
+/** 全局聊天版本号（chatVersion），每次增删/切换/编辑/Swipe 时递增 */
+let 当前聊天版本 = 0;
 
-/** 清空合并缓存（聊天切换 / 消息增删 / 编辑后调用） */
-function 清空合并缓存(): void {
+/**
+ * 获取某条消息的唯一 UID（结合 send_date、extra.uid 或位置特征）
+ */
+function 获取消息UID(消息: SillyTavern.ChatMessage, messageId: number): string {
+  if (消息.extra && typeof (消息.extra as any).uid === 'string') {
+    return (消息.extra as any).uid;
+  }
+  if ((消息 as any).send_date) {
+    return String((消息 as any).send_date);
+  }
+  return `msg_${messageId}_${消息.is_user ? 'u' : 'a'}`;
+}
+
+/** 楼层缓存条目：包含消息UID校验与当前聊天版本号 */
+interface 合并缓存条目 {
+  uid: string;
+  version: number;
+  pool: 模板池表;
+}
+
+/** 各层合并池缓存：由基于单纯索引的 Map 升级为 UID + 聊天版本双重校验结构 */
+const 合并缓存 = new Map<number, 合并缓存条目>();
+
+/** 标记缓存脏（聊天切换 / 消息增删 / 编辑 / Swipe 后调用） */
+export function 标记合并缓存脏(): void {
+  当前聊天版本++;
   合并缓存.clear();
+}
+
+/** 清空合并缓存（兼容原有调用名） */
+function 清空合并缓存(): void {
+  标记合并缓存脏();
 }
 
 /**
  * 读取到当前楼层为止的合并池（对齐原版 attachUiTemplateBlocksToLastAssistant 每次渲染
  * 全部 active 模板 + variableState 全局跨回合累积，合并楼层池-影响检测.md）。
- * merged[k] = 深合并(merged[k-1], 第 k 层池)；楼层无池则沿用前一层的合并结果。
- * 顺序滚动缓存：新增楼层只合并一次（O(层数) 而非 O(n²)）。
+ * 严格按顺序从前向后增量累加（Prefix Sum 状态链表），杜绝跳跃式渲染遗漏变量。
  * @param messageId 目标楼层
  * @returns 合并池（开场白初始变量 + 各层更新累积）
  */
 function 读取合并楼层变量(messageId: number): 模板池表 {
   const chat = SillyTavern.chat;
-  if (!Array.isArray(chat) || messageId < 0) return {};
-  // 增量：从缓存中已有最高层续滚（旧楼层变化时清空缓存由调用方负责）
-  let 起点 = -1;
-  for (const k of 合并缓存.keys()) {
-    if (k > 起点) 起点 = k;
+  if (!Array.isArray(chat) || messageId < 0 || messageId >= chat.length) return {};
+
+  // 严格从 0 楼检查到 messageId 楼，寻找最长有效缓存前缀
+  let 有效前缀 = -1;
+  for (let k = 0; k <= messageId; k++) {
+    const msg = chat[k];
+    if (!msg) break;
+    const uid = 获取消息UID(msg, k);
+    const 缓存 = 合并缓存.get(k);
+    if (缓存 && 缓存.uid === uid && 缓存.version === 当前聊天版本) {
+      有效前缀 = k;
+    } else {
+      break;
+    }
   }
+
   let 累计: 模板池表 = {};
-  if (起点 >= 0 && 起点 < messageId) {
-    // 从缓存续滚
-    累计 = 合并缓存.get(起点) ?? {};
-  } else if (起点 >= messageId) {
-    const 命中 = 合并缓存.get(messageId);
-    if (命中 !== undefined) return 命中;
-    // C4 防御：缓存键不连续（如中间楼层被删/序号前移后未清缓存）→ 从 0 重滚，
-    // 避免返回空表导致渲染空池
-    起点 = -1;
-    累计 = {};
+  if (有效前缀 >= 0) {
+    累计 = 合并缓存.get(有效前缀)!.pool;
   }
-  for (let k = 起点 + 1; k <= messageId; k++) {
+
+  // 从有效前缀后严格按顺序顺序累加至目标楼层（杜绝跳跃遗漏）
+  for (let k = 有效前缀 + 1; k <= messageId; k++) {
+    const msg = chat[k];
+    if (!msg) continue;
+    const uid = 获取消息UID(msg, k);
     const 楼层池 = 读取楼层变量(k); // 每层自身池
     累计 = 深合并池(累计, 楼层池);
-    合并缓存.set(k, 累计);
+    合并缓存.set(k, {
+      uid,
+      version: 当前聊天版本,
+      pool: 累计,
+    });
   }
+
   return 累计;
 }
 

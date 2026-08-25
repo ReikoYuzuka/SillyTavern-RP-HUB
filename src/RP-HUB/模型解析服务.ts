@@ -31,7 +31,7 @@
  */
 
 import { ref } from 'vue';
-import { 写楼层变量, 变量同步开关已启用, 同步错误 } from './变量单向同步';
+import { 读取楼层变量, 写楼层变量, 变量同步开关已启用, 同步错误 } from './变量单向同步';
 import { 渲染开关已启用 } from './模板渲染服务';
 import {
   构建解析系统提示词,
@@ -596,17 +596,65 @@ async function 调用补全API带重试(配置: 解析配置, 系统提示词: s
 
 /** 提取标签内容：取 <标签>...</标签> 之间的内容（已移至 模型解析.ts 纯函数，此处复用导入） */
 
+interface 解析任务 {
+  messageId: number;
+  模板列表: 卡面变量模板[] | null;
+  resolve: (ok: boolean) => void;
+}
+
+/** 异步 FIFO 任务队列，保证并发消息不会被丢弃且按顺序消费 */
+const 任务队列: 解析任务[] = [];
+let 队列运行中 = false;
+
+async function 调度队列消费(): Promise<void> {
+  if (队列运行中) return;
+  队列运行中 = true;
+  解析中.value = true;
+
+  try {
+    while (任务队列.length > 0) {
+      const 任务 = 任务队列.shift()!;
+      try {
+        const ok = await 执行额外模型解析(任务.messageId, 任务.模板列表);
+        任务.resolve(ok);
+      } catch (err) {
+        console.error('[第三部] 额外模型解析队列执行异常：', err);
+        任务.resolve(false);
+      }
+    }
+  } finally {
+    队列运行中 = false;
+    解析中.value = false;
+  }
+}
+
 /**
- * 模式二：额外模型解析一条消息的变量更新（AI 回复 → 提取/解析 → 写入该楼层 rp_hub）。
- * 流程（对齐设计 §4.2 模式二 + RP-Hub updateUiTemplatesFromChat）：
- *   1. 提取标签内容（配置了标签时）；有内容 → 直接 解析模型变量响应；
- *   2. 否则（无标签/无内容）→ 对每个模板调独立 OpenAI API（最近 N 条 + 当前变量 + schema）；
- *   3. 结果按模板合并 → 写楼层变量(messageId, 池表)。
- * @param messageId 目标楼层（AI 回复所在消息）
- * @param 模板列表  当前卡 uiTemplates（可 null → 跳过）
- * @returns 是否写入了楼层变量
+ * 模式二：额外模型解析一条消息的变量更新（加入 FIFO 队列顺序执行，避免并发丢消息）。
  */
 export async function 额外模型解析(messageId: number, 模板列表: 卡面变量模板[] | null): Promise<boolean> {
+  // 检查队列中是否已有同一消息的未完成任务（去重）
+  const 已存在任务 = 任务队列.find(t => t.messageId === messageId);
+  if (已存在任务) {
+    已存在任务.模板列表 = 模板列表;
+    return new Promise<boolean>(resolve => {
+      const 原resolve = 已存在任务.resolve;
+      已存在任务.resolve = ok => {
+        原resolve(ok);
+        resolve(ok);
+      };
+    });
+  }
+
+  return new Promise<boolean>(resolve => {
+    任务队列.push({ messageId, 模板列表, resolve });
+    void 调度队列消费();
+  });
+}
+
+/**
+ * 实际执行额外模型解析的具体工作流程
+ */
+async function 执行额外模型解析(messageId: number, 模板列表: 卡面变量模板[] | null): Promise<boolean> {
   const 配置 = 读取配置();
   // 总开关：关闭后不对变量做任何操作（模式二解析写楼层变量也跳过）
   if (!变量同步开关已启用()) {
@@ -619,17 +667,12 @@ export async function 额外模型解析(messageId: number, 模板列表: 卡面
     记录日志('模型解析', '额外解析跳过：当前模式为跟随主模型');
     return false;
   }
-  if (解析中.value) {
-    // MS4 修复：防重入期间到达的消息不再静默丢弃，记录跳过日志（供诊断连续消息漏解析）
-    console.warn(`[第三部] 额外模型解析防重入：消息 #${messageId} 在解析中到达，已跳过（可考虑待处理队列）`);
-    return false;
-  }
   if (!Array.isArray(模板列表) || 模板列表.length === 0) {
     解析状态.value = '卡面无 uiTemplates，跳过额外解析';
     记录日志('模型解析', '额外解析跳过：卡面无 uiTemplates');
     return false;
   }
-  解析中.value = true;
+
   try {
     // 读取目标楼层自身池表（作为"当前变量"；message 层）
     const 当前池 = 读取楼层变量(messageId);
@@ -707,8 +750,6 @@ export async function 额外模型解析(messageId: number, 模板列表: 卡面
     解析状态.value = `额外模型解析失败：${e instanceof Error ? e.message : String(e)}`;
     记录日志('模型解析', `#${messageId} 额外模型解析异常：${e instanceof Error ? e.message : String(e)}`, 'warn');
     return false;
-  } finally {
-    解析中.value = false;
   }
 }
 
@@ -721,17 +762,6 @@ function 读取消息正文(messageId: number): string {
     // 忽略
   }
   return '';
-}
-
-/** 从某楼层读 rp_hub 池表（与 变量单向同步.ts 读取楼层变量 同语义，内联避免循环依赖） */
-function 读取楼层变量(messageId: number): 模板池表 {
-  try {
-    const 全表 = getVariables({ type: 'message', message_id: messageId });
-    const 池表 = ((_.get(全表, 'rp_hub', {}) ?? {}) as 模板池表);
-    return _.cloneDeep(池表);
-  } catch {
-    return {};
-  }
 }
 
 /**

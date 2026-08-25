@@ -79,6 +79,28 @@
         </div>
       </dl>
       <p v-if="提示" class="thp-hint">{{ 提示 }}</p>
+
+      <!-- 手动标记操作：常驻提供（未标记时可标记为 RP 卡，已标记时可取消标记） -->
+      <div v-if="has_selected" class="thp-btn-group" style="margin-top: 12px;">
+        <button
+          v-if="!当前已标记"
+          class="thp-btn thp-btn-primary"
+          type="button"
+          :disabled="标记操作中 || !当前ContentHash"
+          @click="标记为RP卡"
+        >
+          {{ 标记操作中 ? '标记中…' : '手动标记为 RP 卡' }}
+        </button>
+        <button
+          v-else
+          class="thp-btn thp-btn-danger"
+          type="button"
+          :disabled="标记操作中 || !当前ContentHash"
+          @click="取消RP标记"
+        >
+          {{ 标记操作中 ? '处理中…' : '取消 RP 标记' }}
+        </button>
+      </div>
     </section>
 
     <!-- 全局模板渲染开关 -->
@@ -144,6 +166,10 @@ const formatDetail = ref('—');
 const 变量数 = ref('—');
 const 卡面模板 = ref('—');
 const 提示 = ref('');
+const 当前CardId = ref<string | null>(null);
+const 当前ContentHash = ref<string | null>(null);
+const 当前已标记 = ref(false);
+const 标记操作中 = ref(false);
 
 /** 渲染模式（原生 / RP）：formatDetail 的直白映射 —— rphub=RP，其余=原生（含 st / unknown / 后端未找到） */
 const 渲染模式 = computed(() => (formatDetail.value === 'rphub' ? 'RP' : '原生'));
@@ -222,16 +248,39 @@ function 找最后AI楼层(): number | null {
  *  UI-D1 修复：依赖响应式 ref（卡名），避免直读非响应式 SillyTavern.characterId 导致提示粘滞 */
 const has_selected = computed(() => 卡名.value !== '—' && 卡名.value !== '');
 
-/** 读取当前卡名：SillyTavern.getContext().characterId / characters（脚本 iframe 可用） */
-function 获取当前卡名(): string | null {
+/** 读取当前选中角色的卡片对象 */
+function 获取当前角色对象(): any {
   try {
     const chid = SillyTavern.characterId;
     const characters = SillyTavern.characters;
     if (chid == null || chid === '' || Number(chid) < 0 || !Array.isArray(characters) || characters.length === 0) {
       return null;
     }
-    const card = characters[Number(chid)];
-    return card && typeof card.name === 'string' && card.name ? card.name : null;
+    return characters[Number(chid)] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 读取当前卡名：SillyTavern.getContext().characterId / characters（脚本 iframe 可用） */
+function 获取当前卡名(): string | null {
+  const card = 获取当前角色对象();
+  return card && typeof card.name === 'string' && card.name ? card.name : null;
+}
+
+/** 计算当前角色卡图片的 SHA-256 哈希（hex 字符串） */
+async function 计算当前卡图片Hash(): Promise<string | null> {
+  try {
+    const card = 获取当前角色对象();
+    const avatar = card?.avatar;
+    if (!avatar || typeof avatar !== 'string') return null;
+    const url = `/characters/${encodeURIComponent(avatar)}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+    const hashArr = Array.from(new Uint8Array(hashBuf));
+    return hashArr.map(b => b.toString(16).padStart(2, '0')).join('');
   } catch {
     return null;
   }
@@ -251,6 +300,7 @@ async function 请求<T>(url: string): Promise<T | null> {
 interface ByName {
   cardId: string;
   formatDetail: string | null;
+  contentHash?: string | null;
   marked: boolean;
 }
 
@@ -329,6 +379,36 @@ async function 强制重新渲染() {
   }
 }
 
+/**
+ * 标记/取消标记成功后的重渲联动（补遗二）：清除第二部模式缓存后追加 forceRerenderAll
+ * （与「强制重新渲染」按钮 :372 同一通道），让新模式立即生效，无需用户再手点按钮。
+ *
+ * - 降级：桥不存在或旧版第二部没有 forceRerenderAll 方法 → 不报错，console.warn 一条 +
+ *   toastr.info 指引用户手点「强制重新渲染」或刷新页面；
+ * - 异常容忍：forceRerenderAll 抛错仅 warn + 提示，不回滚标记、不让调用方进入失败分支
+ *   （标记此时已成功落库）；
+ * - 不复用「强制重新渲染」的重渲染中 标志：那是按钮级防重入，与本流程的 标记操作中 是
+ *   两类互不相干的守卫，双标志互锁反而可能卡死按钮；二者即便极端并发，第二部 force 重算幂等。
+ * @returns true = 整聊天重渲已执行成功；false = 降级或刷新失败（调用方据此选择 toast 文案）
+ */
+async function 标记后联动刷新(): Promise<boolean> {
+  const 桥 = 获取兼容桥();
+  桥?.clearModeCache?.();
+  if (!桥 || typeof 桥.forceRerenderAll !== 'function') {
+    console.warn('[第三部] 手动标记联动刷新：__rphubCompat__.forceRerenderAll 不可用（第二部未加载或版本过旧），跳过自动重渲');
+    toastr.info('已标记；未检测到渲染扩展，请点击强制重新渲染或刷新页面');
+    return false;
+  }
+  try {
+    await 桥.forceRerenderAll();
+    return true;
+  } catch (error) {
+    console.warn('[第三部] 手动标记联动刷新失败（标记本身已成功落库）：', error instanceof Error ? error.message : error);
+    toastr.warning('标记成功但刷新失败，可点击「强制重新渲染」');
+    return false;
+  }
+}
+
 async function 刷新状态() {
   if (loading.value) return;
   loading.value = true;
@@ -348,9 +428,16 @@ async function 刷新状态() {
   }
   卡名.value = name;
 
+  // 计算当前角色卡头像图片的 SHA-256 哈希（支持未入库卡透传后端查询）
+  const localHash = await 计算当前卡图片Hash();
+  const hashQuery = localHash ? `?contentHash=${encodeURIComponent(localHash)}` : '';
+
   // 后端 by-name：是否 RP 卡 / 手动标记 / formatDetail
-  const by_name = await 请求<ByName>(`${BASE}/cards/by-name/${encodeURIComponent(name)}`);
+  const by_name = await 请求<ByName>(`${BASE}/cards/by-name/${encodeURIComponent(name)}${hashQuery}`);
   if (by_name) {
+    当前CardId.value = by_name.cardId;
+    当前ContentHash.value = by_name.contentHash ?? localHash ?? null;
+    当前已标记.value = !!by_name.marked;
     是否RP卡.value = by_name.formatDetail === 'rphub' ? '是（后端判断）' : '否（后端判定）';
     formatDetail.value = by_name.formatDetail ?? '—';
     提示.value = by_name.formatDetail === 'rphub' ? '格式识别：RP-Hub' : '格式识别：ST / 未知';
@@ -374,10 +461,27 @@ async function 刷新状态() {
       卡面模板.value = '无';
     }
   } else {
-    是否RP卡.value = '否（后端无记录）';
-    formatDetail.value = '无记录';
-    卡面模板.value = '无';
-    提示.value = '后端（rp-hub-compat）未找到该卡记录，按原生卡处理。';
+    当前CardId.value = null;
+    当前ContentHash.value = localHash ?? null;
+    当前已标记.value = false;
+
+    // 兜底：直接检查该 hash 是否在后端已存在标记
+    if (localHash) {
+      const markStatus = await 请求<{ marked?: boolean }>(`${BASE}/marks/${localHash}`);
+      if (markStatus?.marked) {
+        当前已标记.value = true;
+        formatDetail.value = 'rphub';
+        是否RP卡.value = '是（手动标记）';
+        提示.value = '该卡已手动标记为 RP 卡';
+      }
+    }
+
+    if (!当前已标记.value) {
+      是否RP卡.value = '否（后端无记录）';
+      formatDetail.value = '无记录';
+      卡面模板.value = '无';
+      提示.value = '后端（rp-hub-compat）未找到该卡记录，按原生卡处理。可点击下方按钮手动标记。';
+    }
 
     // 兜底：酒馆助手当前聊天变量数
     try {
@@ -390,6 +494,93 @@ async function 刷新状态() {
   }
 
   loading.value = false;
+}
+
+/** 读取 CSRF 令牌（X-CSRF-Token；ST 中间件对写操作必须校验） */
+function 获取CSRF令牌(): string | null {
+  try {
+    const headers = (SillyTavern as unknown as { getRequestHeaders?: () => Record<string, string> }).getRequestHeaders?.();
+    if (headers) {
+      const v = headers['X-CSRF-Token'] ?? headers['x-csrf-token'] ?? headers['X-CSRF-TOKEN'];
+      if (typeof v === 'string' && v) return v;
+    }
+  } catch {}
+  try {
+    const ctx = (SillyTavern as unknown as { getContext?: () => any }).getContext?.();
+    const h = ctx?.getRequestHeaders?.();
+    const v = h?.['X-CSRF-Token'] ?? h?.['x-csrf-token'] ?? h?.['X-CSRF-TOKEN'];
+    if (typeof v === 'string' && v) return v;
+  } catch {}
+  return null;
+}
+
+/** 包装请求头（自动注入 X-CSRF-Token） */
+function 获取写请求头(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = 获取CSRF令牌();
+  if (token) headers['X-CSRF-Token'] = token;
+  return headers;
+}
+
+/** 手动设置标记为 RP 卡（PUT /v1/marks/:contentHash） */
+async function 标记为RP卡() {
+  if (标记操作中.value) return;
+  const hash = 当前ContentHash.value;
+  if (!hash) {
+    toastr.warning('无法获取卡片 contentHash（后端无此卡记录）');
+    return;
+  }
+  标记操作中.value = true;
+  try {
+    const res = await fetch(`${BASE}/marks/${hash}`, {
+      method: 'PUT',
+      headers: 获取写请求头(),
+      body: JSON.stringify({ type: 'rphub', note: '前端诊断界面手动标记' }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.error?.message || `HTTP ${res.status}`);
+    }
+    toastr.success('已手动标记为 RP 卡');
+    // 补遗二：清缓存 + 联动整聊天重渲，让新模式立即生效（降级/失败时由 标记后联动刷新 内部提示）
+    const 已刷新 = await 标记后联动刷新();
+    if (已刷新) toastr.success('已手动标记为 RP 卡并已刷新聊天');
+    await 刷新状态();
+  } catch (e) {
+    toastr.error(`标记失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    标记操作中.value = false;
+  }
+}
+
+/** 取消 RP 标记（DELETE /v1/marks/:contentHash） */
+async function 取消RP标记() {
+  if (标记操作中.value) return;
+  const hash = 当前ContentHash.value;
+  if (!hash) {
+    toastr.warning('无法获取卡片 contentHash');
+    return;
+  }
+  标记操作中.value = true;
+  try {
+    const res = await fetch(`${BASE}/marks/${hash}`, {
+      method: 'DELETE',
+      headers: 获取写请求头(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.error?.message || `HTTP ${res.status}`);
+    }
+    toastr.success('已取消 RP 标记');
+    // 补遗二：清缓存 + 联动整聊天重渲，让新模式立即生效（降级/失败时由 标记后联动刷新 内部提示）
+    const 已刷新 = await 标记后联动刷新();
+    if (已刷新) toastr.success('已取消 RP 标记并已刷新聊天');
+    await 刷新状态();
+  } catch (e) {
+    toastr.error(`取消标记失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    标记操作中.value = false;
+  }
 }
 
 用聊天切换自动刷新(刷新状态);

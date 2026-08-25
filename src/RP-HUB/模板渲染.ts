@@ -299,30 +299,105 @@ export function 构建渲染上下文(变量: unknown, 覆盖: Partial<渲染上
 
 /* ---------- #each 展开 ---------- */
 
-/** #each 块匹配（对齐 renderUiTemplateEachBlocks 的 eachBlockPattern） */
-const each块匹配 = /\{\{\s*#each\s+([^\s}]+)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*\}\}((?:(?!\{\{\s*#each\b)[\s\S])*?)\{\{\s*\/each\s*\}\}/g;
+/** 保护限制常量 */
+const 单块最大迭代次数 = 500;
+const 单模板最大输出字符数 = 2 * 1024 * 1024; // 2MB 保护
+
+interface EachBlockInfo {
+  startIndex: number;
+  endIndex: number;
+  path: string;
+  alias: string;
+  body: string;
+}
 
 /**
- * #each 循环展开（对齐 renderUiTemplateEachBlocks）：
+ * 线性 O(N) 栈式词法分词器（Stack-based Lexer），精准配对最内层 {{#each}}...{{/each}}，彻底消除 ReDoS 隐患。
+ */
+function 寻找最内层each块(文本: string): EachBlockInfo | null {
+  const eachStartPattern = /\{\{\s*#each\s+([^\s}]+)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*\}\}/g;
+  const eachEndPattern = /\{\{\s*\/each\s*\}\}/g;
+
+  let match: RegExpExecArray | null;
+  const starts: Array<{ index: number; length: number; path: string; alias: string }> = [];
+
+  while ((match = eachStartPattern.exec(文本)) !== null) {
+    starts.push({
+      index: match.index,
+      length: match[0].length,
+      path: match[1],
+      alias: match[2] || '',
+    });
+  }
+
+  if (starts.length === 0) return null;
+
+  while ((match = eachEndPattern.exec(文本)) !== null) {
+    const endMatchIndex = match.index;
+    const endMatchLength = match[0].length;
+
+    // 寻找在当前 {{/each}} 之前且最近的一个未配对 {{#each}}
+    let matchedStartIndex = -1;
+    for (let i = starts.length - 1; i >= 0; i--) {
+      if (starts[i].index < endMatchIndex) {
+        matchedStartIndex = i;
+        break;
+      }
+    }
+
+    if (matchedStartIndex !== -1) {
+      const start = starts[matchedStartIndex];
+      const body = 文本.slice(start.index + start.length, endMatchIndex);
+      return {
+        startIndex: start.index,
+        endIndex: endMatchIndex + endMatchLength,
+        path: start.path,
+        alias: start.alias,
+        body,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * #each 循环展开（对齐 renderUiTemplateEachBlocks，采用栈式词法解析器 + 500 次单块迭代与输出体积保护）：
  *   数组按 index 迭代，对象按 Object.entries 迭代；子上下文带 current/index/key/length/alias/parentContext；
  *   空数组/空对象/非容器 → {{else}} 分支（无 else 则空）；最多 深度上限（默认 50）轮。
  */
 export function 渲染each块(模板文本: string, 变量: unknown, 上下文: 渲染上下文 | null = null, 选项: 渲染选项 = {}): string {
   let 输出 = String(模板文本 || '');
   const 深度上限 = typeof 选项.深度上限 === 'number' && 选项.深度上限 > 0 ? 选项.深度上限 : 50;
+
   for (let 轮 = 0; 轮 < 深度上限; 轮++) {
-    let 有替换 = false;
-    输出 = 输出.replace(each块匹配, (_匹配, 路径, 别名, 主体) => {
-      有替换 = true;
-      const 值 = 求模板值(变量, 路径, 上下文, 选项);
-      const [条目模板, 空模板 = ''] = String(主体 || '').split(/\{\{\s*else\s*\}\}/i);
-      const 条目列表 = Array.isArray(值)
-        ? 值.map((条目, index) => ({ 条目, key: index, index }))
-        : (值 !== null && typeof 值 === 'object'
-            ? Object.entries(值 as Record<string, unknown>).map(([键, 条目], index) => ({ 条目, key: 键, index }))
-            : []);
-      if (!条目列表.length) return 渲染模板字符串(空模板, 变量, { ...选项, 当前上下文: 上下文 });
-      return 条目列表.map(({ 条目, key, index }) =>
+    if (输出.length > 单模板最大输出字符数) {
+      console.warn('[第三部] 模板渲染：输出字符数超出上限保护 (2MB)，中断展开');
+      break;
+    }
+
+    const block = 寻找最内层each块(输出);
+    if (!block) break;
+
+    const 值 = 求模板值(变量, block.path, 上下文, 选项);
+    const [条目模板, 空模板 = ''] = block.body.split(/\{\{\s*else\s*\}\}/i);
+
+    let 条目列表 = Array.isArray(值)
+      ? 值.map((条目, index) => ({ 条目, key: index, index }))
+      : (值 !== null && typeof 值 === 'object'
+          ? Object.entries(值 as Record<string, unknown>).map(([键, 条目], index) => ({ 条目, key: 键, index }))
+          : []);
+
+    // 截断至单块最大迭代次数
+    if (条目列表.length > 单块最大迭代次数) {
+      条目列表 = 条目列表.slice(0, 单块最大迭代次数);
+    }
+
+    let 替换结果 = '';
+    if (!条目列表.length) {
+      替换结果 = 渲染模板字符串(空模板, 变量, { ...选项, 当前上下文: 上下文 });
+    } else {
+      替换结果 = 条目列表.map(({ 条目, key, index }) =>
         渲染模板字符串(条目模板, 变量, {
           ...选项,
           当前上下文: 构建渲染上下文(变量, {
@@ -331,13 +406,15 @@ export function 渲染each块(模板文本: string, 变量: unknown, 上下文: 
             index,
             key: String(key),
             length: 条目列表.length,
-            alias: 别名 || '',
+            alias: block.alias,
           }),
         }),
       ).join('');
-    });
-    if (!有替换) break;
+    }
+
+    输出 = 输出.slice(0, block.startIndex) + 替换结果 + 输出.slice(block.endIndex);
   }
+
   return 输出;
 }
 
@@ -991,12 +1068,47 @@ function 拆分正文面板(串: string): { 前文本: string; 面板段: string
 
 /* ---------- 正文段围栏化（完整对齐第二部 html-fence.js fenceFullHtml，处理同一来源 rph_display） ---------- */
 
-/** 完整 HTML 文档开头标记（对齐第二部 FULL_HTML_MATCH_RE：`<!doctype html>` 或 `<html ...>`，`<html\b>` 排除 <htmlx>） */
-const 完整文档标记 = /(<!doctype html>|<html\b[^>]*>)/i;
+/** 编译用户自定义或默认的文档切片正则 */
+export function 获取当前文档切片正则(自定义模式?: string[]): RegExp {
+  const 默认模式 = [
+    '<!doctype html>',
+    '<html\\b[^>]*>',
+    '<title\\b[^>]*>[\\s\\S]*?<\\/title>\\s*<style\\b',
+    '<style\\b[^>]*>[\\s\\S]*?(?:\\.custom-|\\.panel|body\\s*\\{|#mainPanel)[\\s\\S]*?<\\/style>',
+  ];
+  let 模式列表 = Array.isArray(自定义模式) && 自定义模式.length > 0 ? 自定义模式 : null;
+  if (!模式列表) {
+    try {
+      const raw = localStorage.getItem('thp_custom_doc_patterns');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) 模式列表 = parsed;
+      }
+    } catch {}
+  }
+  const 最终列表 = 模式列表 || 默认模式;
+  const 正则串 = 最终列表
+    .map(p => {
+      const str = String(p || '').trim();
+      if (!str) return null;
+      const m = str.match(/^\/([\s\S]+)\/([gimsuy]*)$/);
+      return m ? m[1] : str;
+    })
+    .filter(Boolean)
+    .join('|');
+  try {
+    return new RegExp(`(${正则串})`, 'i');
+  } catch {
+    return /(<!doctype html>|<html\b[^>]*>|<title\b[^>]*>[\s\S]*?<\/title>\s*<style\b|<style\b[^>]*>[\s\S]*?(?:\.custom-|\.panel|body\s*\{|#mainPanel)[\s\S]*?<\/style>)/i;
+  }
+}
+
+/** 完整 HTML 文档 / 界面片段开头标记（支持扩展界面片段特征，如 <title>...<style>、带 custom-/panel/body 样式的 <style>、含面板容器的 <div>） */
+export const 完整文档标记 = 获取当前文档切片正则();
 
 /** 代码块文本是否为「完整 HTML 文档」（含 <!doctype/<html 标记且命中酒馆助手 isFrontend）。 */
 function 是完整文档代码块(代码块: string): boolean {
-  return 完整文档标记.test(代码块) && 含html标记(代码块);
+  return (获取当前文档切片正则().test(代码块) || /(<!doctype html>|<html\b[^>]*>)/i.test(代码块)) && 含html标记(代码块);
 }
 
 /** 围栏代码块是否为「完整 HTML 文档」（对齐第二部 isFullDocFencedBlock：开围栏 ``` 后 3 字符起、闭围栏止）。 */
@@ -1206,7 +1318,8 @@ export function 围栏化正文(正文: string, 注入兼容层 = true, 正文�
   const 串 = String(正文 ?? '');
   if (!串) return 串;
   if (串.includes('```')) return 规整完整文档围栏空行(围栏化裸完整文档(串), 注入兼容层); // 短路精确化 + H4
-  const 文档匹配 = 串.match(完整文档标记);
+  const 动态标记 = 获取当前文档切片正则();
+  const 文档匹配 = 串.match(动态标记);
   if (!文档匹配) {
     if (正文片段开头.test(串)) {
       // 骨架围栏：进酒馆助手 iframe 存活（ST 会剥 iframe/script）；srcdoc 双重转义 + dvh→vh

@@ -1,6 +1,6 @@
 {
   "name": "sillytavern-rp-hub",
-  "version": "0.0.5",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "build:dev": "webpack --mode development",

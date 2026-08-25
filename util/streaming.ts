@@ -44,7 +44,10 @@ export function mountStreamingMessages(
 ): { unmount: () => void } {
   const { host = 'iframe', filter, prefix = uuidv4() } = options;
 
-  const states: Map<number, { app: App; data: Reactive<StreamingMessageContext>; destroy: () => void }> = new Map();
+  const states: Map<
+    number,
+    { app: App; data: Reactive<StreamingMessageContext>; observer: MutationObserver; destroy: () => void }
+  > = new Map();
   let has_stoped = false;
 
   const destroyIfInvalid = (message_id: number): boolean => {
@@ -68,13 +71,16 @@ export function mountStreamingMessages(
       return;
     }
 
-    const message = stream_message ?? getChatMessages(message_id)[0].message ?? '';
+    const message = stream_message ?? getChatMessages(message_id)[0]?.message ?? '';
     if (filter && !filter(message_id, message)) {
       states.get(message_id)?.destroy();
       return;
     }
 
     const $message_element = $(`.mes[mesid='${message_id}']`);
+    if ($message_element.length === 0) {
+      return;
+    }
 
     const $mes_text = $message_element.find('.mes_text').addClass('hidden!');
     $message_element.find('.TH-streaming').addClass('hidden!');
@@ -89,6 +95,7 @@ export function mountStreamingMessages(
       }
     }
 
+    // 重建前先彻底销毁旧状态并断开 Observer
     states.get(message_id)?.destroy();
     $host.remove();
 
@@ -137,12 +144,16 @@ export function mountStreamingMessages(
         $host.removeClass('hidden!');
       }
     });
-    observer.observe($mes_text[0] as HTMLElement, { childList: true });
+    if ($mes_text.length > 0 && $mes_text[0]) {
+      observer.observe($mes_text[0] as HTMLElement, { childList: true });
+    }
 
     states.set(message_id, {
       app,
       data,
+      observer,
       destroy: () => {
+        observer.disconnect();
         const $th_streaming = $message_element.find('.TH-streaming');
         if ($th_streaming.length > 0) {
           $th_streaming.removeClass('hidden!');
@@ -155,10 +166,29 @@ export function mountStreamingMessages(
         if ($mes_streaming.children().length === 0) {
           $mes_streaming.remove();
         }
-        observer.disconnect();
         states.delete(message_id);
       },
     });
+  };
+
+  /**
+   * 增量定向渲染未挂载楼层（避免无节制的全量重复扫描）
+   */
+  const renderUnmountedMessages = async () => {
+    if (has_stoped) {
+      return;
+    }
+    destroyAllInvalid();
+    const tasks: Promise<void>[] = [];
+    $('#chat')
+      .children(".mes[is_user='false'][is_system='false']")
+      .each((_index, node) => {
+        const message_id = Number($(node).attr('mesid') ?? 'NaN');
+        if (!isNaN(message_id) && !states.has(message_id)) {
+          tasks.push(renderOneMessage(message_id));
+        }
+      });
+    await Promise.all(tasks);
   };
 
   const renderAllMessage = async (options: { destroy_all?: boolean; trigger_event?: boolean } = {}) => {
@@ -185,6 +215,11 @@ export function mountStreamingMessages(
     );
   };
 
+  // 80ms 防抖批处理增量挂载
+  const debouncedRenderUnmounted = _.debounce(() => {
+    errorCatched(renderUnmountedMessages)();
+  }, 80);
+
   const stop_list: Array<() => void> = [];
   const scopedEventOn = <T extends EventType>(event: T, listener: ListenerType[T], first?: true) => {
     stop_list.push(
@@ -202,16 +237,19 @@ export function mountStreamingMessages(
     },
     true,
   );
-  [tavern_events.MESSAGE_EDITED, tavern_events.MESSAGE_DELETED].forEach(event =>
-    scopedEventOn(event, message_id => {
-      destroyAllInvalid();
-      states.get(message_id)?.destroy();
-      renderOneMessage(message_id);
-    }),
-  );
-  [tavern_events.MORE_MESSAGES_LOADED, tavern_events.MESSAGE_DELETED].forEach(event =>
-    scopedEventOn(event, () => setTimeout(errorCatched(renderAllMessage), 1000)),
-  );
+  scopedEventOn(tavern_events.MESSAGE_EDITED, message_id => {
+    destroyAllInvalid();
+    states.get(message_id)?.destroy();
+    renderOneMessage(message_id);
+  });
+  scopedEventOn(tavern_events.MESSAGE_DELETED, message_id => {
+    // 单条精准失效与清理，避免全量重扫风暴
+    states.get(message_id)?.destroy();
+    destroyAllInvalid();
+  });
+  scopedEventOn(tavern_events.MORE_MESSAGES_LOADED, () => {
+    debouncedRenderUnmounted();
+  });
   scopedEventOn(tavern_events.STREAM_TOKEN_RECEIVED, message => {
     renderOneMessage(Number($('#chat').children('.mes.last_mes').attr('mesid')), message);
   });

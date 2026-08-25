@@ -56,7 +56,7 @@
           </div>
 
           <div v-if="楼层展开集合.has(String(楼层.messageId))" class="thp-sync-pool-list">
-            <div v-for="池 in 楼层.池列表" :key="池.id" class="thp-sync-pool">
+            <div v-for="池 in 获取楼层池详情(楼层.messageId)" :key="池.id" class="thp-sync-pool">
               <div class="thp-sync-pool-head">
                 <code class="thp-sync-pool-id">{{ 池.id }}</code>
                 <span class="thp-badge">{{ 池.变量数 }} 个变量</span>
@@ -346,7 +346,7 @@ import { 替换卡面提示词, 取更新提示词, type 卡面变量模板 } fr
 import { 构建模板载荷JSON, 构建变量更新指令 } from './模型解析';
 import { 用聊天切换自动刷新 } from './自动刷新';
 import { 扁平化变量表, type 扁平变量表 } from './楼层变量';
-import { 上次写入时间, 同步错误, 最近状态, 初始化状态, 变量同步开关响应式, 设置变量同步开关 } from './变量单向同步';
+import { 上次写入时间, 同步错误, 最近状态, 初始化状态, 变量同步开关响应式, 设置变量同步开关, 读取楼层变量, 读取楼层池键列表 } from './变量单向同步';
 import {
   保存配置,
   配置响应,
@@ -362,6 +362,10 @@ import {
 
 /* ---------- 楼层变量（rp_hub · 只读视图） ---------- */
 
+interface 池概要 {
+  id: string;
+}
+
 interface 池视图 {
   id: string;
   变量数: number;
@@ -370,10 +374,11 @@ interface 池视图 {
 
 interface 楼层变量视图 {
   messageId: number;
-  池列表: 池视图[];
+  池列表: 池概要[];
 }
 
-/** 扫描当前聊天中带楼层变量（chat[i].variables[swipe_id].rp_hub）的楼层，最新在前 */
+/** 扫描当前聊天中带楼层变量的楼层元数据（轻量级扫描，不深度扁平化），最新在前。
+ *  走 变量单向同步 的唯一存储出口（三段回退链：cramming 字典 → 本槽顶层 → 历史全局顶层）。 */
 function 扫描楼层变量(): 楼层变量视图[] {
   const 视图: 楼层变量视图[] = [];
   try {
@@ -381,28 +386,44 @@ function 扫描楼层变量(): 楼层变量视图[] {
     if (!Array.isArray(chat)) return 视图;
     chat.forEach((消息, i) => {
       if (!消息 || 消息.is_system) return;
-      const 变量格 = 消息.variables?.[消息.swipe_id ?? 0];
-      const rp_hub = 变量格?.rp_hub;
-      if (!rp_hub || typeof rp_hub !== 'object') return;
-      const 池列表: 池视图[] = Object.entries(rp_hub as Record<string, unknown>)
-        .map(([id, 池]) => {
-          const 扁平 = 扁平化变量表(池);
-          return { id, 变量数: Object.keys(扁平).length, 扁平 };
-        })
-        .filter(p => p.变量数 > 0);
-      if (池列表.length === 0) return;
+      const ids = 读取楼层池键列表(i);
+      if (ids.length === 0) return;
+      const 池列表: 池概要[] = ids.map(id => ({ id }));
       视图.push({ messageId: i, 池列表 });
     });
   } catch {
-    // 聊天数组读取异常时忽略，展示空列表
+    // 忽略
   }
   return 视图.reverse();
 }
 
-const 楼层变量列表 = ref<楼层变量视图[]>([]);
+/** 懒加载详情缓存：messageId -> 池视图列表 */
+const 楼层详情缓存 = ref<Map<number, 池视图[]>>(new Map());
+
+/** 点击展开时按需 (Lazy) 计算深度扁平化变量表（走唯一存储出口的三段回退链） */
+function 获取楼层池详情(messageId: number): 池视图[] {
+  if (楼层详情缓存.value.has(messageId)) {
+    return 楼层详情缓存.value.get(messageId)!;
+  }
+  const rp_hub = 读取楼层变量(messageId);
+  if (!rp_hub || typeof rp_hub !== 'object') return [];
+
+  const 详情列表: 池视图[] = Object.entries(rp_hub as Record<string, unknown>)
+    .map(([id, 池]) => {
+      const 扁平 = 扁平化变量表(池);
+      return { id, 变量数: Object.keys(扁平).length, 扁平 };
+    })
+    .filter(p => p.变量数 > 0);
+
+  楼层详情缓存.value.set(messageId, 详情列表);
+  return 详情列表;
+}
+
+const 楼层变量列表 = shallowRef<楼层变量视图[]>([]);
 const 楼层展开集合 = ref<Set<string>>(new Set());
 
 function 刷新楼层(): void {
+  楼层详情缓存.value.clear();
   楼层变量列表.value = 扫描楼层变量();
 }
 

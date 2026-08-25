@@ -45,14 +45,15 @@ export function regexFromString(input: string, replace_macros?: boolean): RegExp
     if (!match) {
       return makeRegex(_.escapeRegExp(input), 'i');
     }
-    if (match[2] && !/^(?!.*?(.).*?\1)[gmixXsuUAJ]+$/.test(match[3])) {
+    // 修正捕获组越界：match[2] 才是 flags
+    if (match[2] && !/^(?!.*?(.).*?\1)[gmixXsuUAJ]+$/.test(match[2])) {
       return makeRegex(input, 'i');
     }
-    let flags = match[2] ?? '';
-    _.pull(flags, 'g');
-    if (flags.indexOf('i') === -1) {
-      flags = flags + 'i';
-    }
+    // 使用 Set 处理修饰符：移除 'g' 并保证 'i'
+    const flagSet = new Set((match[2] ?? '').split(''));
+    flagSet.delete('g');
+    flagSet.add('i');
+    const flags = Array.from(flagSet).join('');
     return makeRegex(match[1], flags);
   } catch {
     return null;
