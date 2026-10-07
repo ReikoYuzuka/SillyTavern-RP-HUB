@@ -575,14 +575,16 @@ function 拦截drop(e: DragEvent): boolean {
   }
 
   // 同步接管（此时无法区分内容，但白名单内文件的浏览器默认行为与 ST 处理权一并收归本扩展；
-  // 非 RP/非角色的文件稍后经 重放drop 完整还原生流程）
+  // 非 RP/非角色文件及混合拖入的非白名单附件稍后经 重放drop 完整还原生流程）
   e.preventDefault();
   e.stopPropagation();
   e.stopImmediatePropagation();
   void (async () => {
+    const 非角色文件 = files.filter(file => !文件允许(file));
     const 重放 = await 处理文件组(角色文件);
-    if (重放.length > 0) {
-      重放drop(e, 重放.length === 角色文件.length ? undefined : 重放);
+    const 全部重放 = [...重放, ...非角色文件];
+    if (全部重放.length > 0) {
+      重放drop(e, 全部重放.length === files.length ? undefined : 全部重放);
     }
   })();
   return true;

@@ -45,12 +45,13 @@ export function regexFromString(input: string, replace_macros?: boolean): RegExp
     if (!match) {
       return makeRegex(_.escapeRegExp(input), 'i');
     }
-    // 修正捕获组越界：match[2] 才是 flags
-    if (match[2] && !/^(?!.*?(.).*?\1)[gmixXsuUAJ]+$/.test(match[2])) {
+    // 修正捕获组越界：match[2] 才是 flags，收敛为标准 ECMAScript RegExp flags: dgimsuyv
+    const rawFlags = match[2] ?? '';
+    if (rawFlags && !/^(?!.*?(.).*?\1)[dgimsuyv]+$/i.test(rawFlags)) {
       return makeRegex(input, 'i');
     }
-    // 使用 Set 处理修饰符：移除 'g' 并保证 'i'
-    const flagSet = new Set((match[2] ?? '').split(''));
+    // 使用 Set 处理修饰符：移除 'g' 并保证 'i'，且仅保留标准 flags
+    const flagSet = new Set(rawFlags.split('').filter(f => 'dgimsuyv'.includes(f.toLowerCase())));
     flagSet.delete('g');
     flagSet.add('i');
     const flags = Array.from(flagSet).join('');
