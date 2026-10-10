@@ -256,7 +256,12 @@ function 剥离并同步全部swipes(消息: SillyTavern.ChatMessage, messageId:
     for (let i = 0; i < 消息.swipes.length; i++) {
       const sw = 消息.swipes[i];
       if (typeof sw !== 'string') continue;
-      const { 正文: 该正文, 变量表 } = 转换更新块(sw);
+      const { 正文: 该正文, 变量表, 错误: 该错误 } = 转换更新块(sw, { 期望模板ids: 卡面模板ids });
+      if (该错误) {
+        // D4：swipe 路径解析/校验失败也可见（官方 recordFailure 等价，app.js:2445-2449）
+        同步错误.value = `#${messageId} swipe[${i}] 更新块解析失败：${该错误}`;
+        记录日志('变量同步', 同步错误.value, 'warn');
+      }
       if (该正文 !== sw) {
         rawSwipes[i] = sw; // 存入原文映射
         消息.swipes[i] = 该正文;
@@ -322,7 +327,7 @@ export function 处理消息(messageId: number, 是编辑 = false): { handled: b
   }
 
   const 原文 = 消息.mes; // 剥离前完整原文（编辑回显用，E 需求）
-  const { 正文, 变量表, 错误 } = 转换更新块(消息.mes);
+  const { 正文, 变量表, 错误 } = 转换更新块(消息.mes, { 期望模板ids: 卡面模板ids });
 
   // 无论解析成败，更新块一律从正文剥离（对用户 / 对 AI 隐藏）
   if (正文 !== 消息.mes) {
@@ -367,8 +372,23 @@ export function 处理消息(messageId: number, 是编辑 = false): { handled: b
       同步错误.value = `#${messageId} 更新块 JSON 解析失败：${错误}`;
       最近状态.value = `#${messageId} 更新块已剥离（解析失败）`;
       记录日志('变量同步', `#${messageId} 更新块 JSON 解析失败：${错误}`, 'warn');
+      // D7 对齐：官方解析/校验失败走 recordFailure（app.js:2445-2449），不挂面板（无 attach）
+      return { handled: false, reason: '更新块解析失败' };
     }
-    return { handled: false, reason: 错误 ? '更新块解析失败' : '无更新块' };
+    if (正文 !== 原文) {
+      // D7 对齐：AI 输出过更新块但解析后无变更（空块 / updates:[] / 全空池）→ 官方仍挂面板：
+      // attachUiTemplateBlocksToLastAssistant（app.js:2467）在 markUiTemplateStatus('skipped','无变化')
+      // （:2476）之前无条件执行，面板渲染的是全部 active 模板（:2541-2548），空态也挂。
+      // → 置 rph_has_update 让 模板渲染服务 判为模板消息，用累积池渲染面板（正文照常剥离）。
+      try {
+        消息.extra ??= {};
+        消息.extra.rph_has_update = true;
+      } catch {
+        // extra 不可写时忽略（标记缺失 → 面板不挂，降级不报错）
+      }
+      return { handled: false, reason: '更新块无变更（已标记面板挂载）' };
+    }
+    return { handled: false, reason: '无更新块' };
   }
 
   // 路线 b2：带 swipes 的多页消息，当前 swipe 的池已由上方 剥离并同步全部swipes 的
@@ -388,6 +408,7 @@ export function 处理消息(messageId: number, 是编辑 = false): { handled: b
     // 写池与剥离的同步性：剥离（改 mes/swipe）在前，写楼层变量（TH updateVariablesWith
     // 同步 updater，同步完成）在后 —— 标记设置于写成功之后，与池落定一致。
     // 幂等：重复事件（RENDERED 重扫等）再次进入时标记已存在，无副作用。
+    // D7：写池成功但池为空（全空 variables）时同样置位——官方空更新也挂面板（app.js:2467）。
     try {
       消息.extra ??= {};
       消息.extra.rph_has_update = true;
@@ -513,6 +534,13 @@ function 获取聊天ID(): string | null {
 let 已初始化聊天: string | null = null;
 
 /**
+ * 当前卡面模板 id 缓存（D1 官方 expectedTemplates 语义，data-services.js:1402）：
+ * 供 转换更新块 做「单模板裸 JSON 的 id 回填 + 未知模板ID校验」。
+ * 检查并初始化 每次从后端 uiTemplates 刷新；CHAT_CHANGED 清空（与 已初始化聊天 同步）。
+ */
+let 卡面模板ids: string[] | undefined = undefined;
+
+/**
  * 开场白楼层初始化（幂等，可安全在挂载与每次 CHAT_CHANGED 调用）：
  *   读后端卡面 uiTemplates → 构建 rp_hub 池表 → 用写楼层变量() 把【内层为空的模板】
  *   补灌进【开场白所在楼层】的 message 层变量 chat[i].variables[swipe_id].rp_hub。
@@ -555,6 +583,8 @@ export async function 检查并初始化(): Promise<void> {
     }
     const vars = await 请求<VariablesView>(`${BASE}/cards/${by_name.cardId}/variables?fields=uiTemplates`);
     const 模板列表 = vars?.variables?.uiTemplates ?? [];
+    // D1：缓存卡面模板 id 列表（官方 expectedTemplates），供 转换更新块 id 回填/未知ID校验
+    卡面模板ids = 模板列表.map(t => (t && typeof t === 'object' && typeof (t as { id?: unknown }).id === 'string' ? (t as { id: string }).id : '')).filter(s => s !== '');
     const 全池表 = 构建初始化池表(模板列表);
     if (Object.keys(全池表).length === 0) {
       初始化状态.value = '卡面无 uiTemplates 可初始化';
@@ -799,6 +829,7 @@ export function 启动变量单向同步服务(): void {
   try {
     eventOn(tavern_events.CHAT_CHANGED, () => {
       已初始化聊天 = null;
+      卡面模板ids = undefined; // D1：换聊天后旧卡模板 id 列表失效，待 检查并初始化 刷新
       最近状态.value = '等待 AI 回复…';
       同步错误.value = '';
       初始化状态.value = '';

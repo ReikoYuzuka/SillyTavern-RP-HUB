@@ -776,8 +776,10 @@ async function 解析并合并(
   模板列表: 卡面变量模板[],
   _深度: number,
 ): Promise<模板池表> {
-  // 形态 1：更新块（多模板分组）
-  const 块结果 = 转换更新块(内容);
+  // 形态 1：更新块（多模板分组）；期望模板 ids = 卡面模板列表（D1 官方 expectedTemplates 语义）
+  const 块结果 = 转换更新块(内容, {
+    期望模板ids: 模板列表.map(t => (t && typeof t === 'object' && typeof t.id === 'string' ? t.id : '')).filter(s => s !== ''),
+  });
   if (块结果.变量表 && Object.keys(块结果.变量表).length > 0) {
     return { ...当前池, ...块结果.变量表 };
   }

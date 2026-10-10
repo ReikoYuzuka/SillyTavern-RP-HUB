@@ -57,6 +57,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, '127.0.0.1', () => {
-  console.log(`[static-server] serving ${root} at http://127.0.0.1:${port}`);
+// host 可选（第 4 个参数）：默认仅本机可访问；需要局域网调试时传 0.0.0.0
+const host = process.argv[4] ?? '127.0.0.1';
+
+server.listen(port, host, () => {
+  console.log(`[static-server] serving ${root} at http://${host === '0.0.0.0' ? '<本机局域网IP>' : host}:${port}`);
 });

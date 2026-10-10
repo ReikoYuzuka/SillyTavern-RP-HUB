@@ -25,7 +25,7 @@
  *
  * 性能（§2.7）：per 消息缓存（rph_template_hash + rph_template_display），合并楼层池未变且
  *   display_text 未被外部覆写 → 跳过；合并池按楼层顺序滚动缓存（merged[k] = 合并 merged[k-1] +
- *   第 k 层池，chatLoaded 全量 O(n)）；模板定义按卡名缓存（30 分钟 TTL，CHAT_CHANGED 失效）；
+ *   第 k 层池，chatLoaded 全量 O(n)）；模板定义按卡名缓存（5 分钟 TTL，CHAT_CHANGED 失效）；
  *   chatLoaded 全量逐条处理每 20 条 setTimeout(0) 让出一帧；display_text 持久化防抖。
  *
  * 总开关：localStorage thp_template_render_enabled（缺省开启）。
@@ -50,8 +50,10 @@ const 存储键 = 'thp_template_render_enabled';
 /** rp-hub-compat 引擎渲染结果写入 .mes_text 的标记 class（对齐其 pure.js RENDER_MARK_CLASS） */
 const 引擎标记 = 'rph-rendered';
 
-/** 模板定义缓存 TTL（毫秒，对齐 rp-hub-compat rp-mode 的 30 分钟） */
-const 缓存TTL毫秒 = 30 * 60 * 1000;
+/** 模板定义缓存 TTL（毫秒）。D6：30min→5min——卡重导入/改名后旧定义最多滞留 5 分钟
+ *（终审报告 §6.1-D6：后端 store 为不可变 cardId 存储、无 TTL 缓存可调；前端缩短过期窗口 +
+ * 既有 CHAT_CHANGED 失效链）。 */
+const 缓存TTL毫秒 = 5 * 60 * 1000;
 
 /** 事件处理器在同一消息上的防重入集合（触发重扫描时防递归） */
 const 重扫描中 = new Set<number>();
